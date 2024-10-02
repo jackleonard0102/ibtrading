@@ -186,3 +186,5 @@ AUTOHEDGER_APP/
 
 - **Permission Errors**: If you receive "No security definition" errors, check that your IBKR account has permissions for the selected stocks and options.
 
+##
+If you have any questions or issues, please contact us at fazeenlancer@gmail.com
