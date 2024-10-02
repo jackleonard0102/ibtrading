@@ -49,6 +49,11 @@ class Dashboard(tk.Frame):
         self.hedge_button = ttk.Button(self.portfolio_frame, text="Run Auto-Hedger", command=self.run_auto_hedger)
         self.hedge_button.grid(row=3, column=0, columnspan=2, padx=10, pady=10)
 
+        # Add Stop Auto-Hedger Button
+        self.stop_button = ttk.Button(self.portfolio_frame, text="Stop Auto-Hedger", command=self.stop_auto_hedger)
+        self.stop_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
+
+
         # Section for IV/RV Calculator
         self.ivrv_frame = ttk.LabelFrame(self, text="IV / RV Calculator")
         self.ivrv_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
@@ -88,12 +93,12 @@ class Dashboard(tk.Frame):
 
     def load_stocks(self):
         """
-        Load portfolio positions dynamically and populate the dropdown
+        Load portfolio positions dynamically and filter the dropdown to show only eligible stocks.
         """
         try:
             positions = get_portfolio_positions()
-            symbols = set([p.contract.symbol for p in positions])
-            self.stock_dropdown['values'] = list(symbols)
+            eligible_symbols = set([p.contract.symbol for p in positions if p.contract.secType == 'STK'])  # Example filter: only stocks
+            self.stock_dropdown['values'] = list(eligible_symbols)
             self.stock_dropdown.current(0)
         except Exception as e:
             self.stock_dropdown['values'] = ["Error fetching positions"]
@@ -131,26 +136,45 @@ class Dashboard(tk.Frame):
     def run_auto_hedger(self):
         """
         Start the auto-hedger with the specified target delta and max order quantity.
+        If the stock or delta changes, it restarts monitoring.
         """
         stock_symbol = self.stock_var.get()
         target_delta = float(self.target_delta_entry.get())
         max_order_qty = int(self.max_order_qty_entry.get())
 
+        # Stop any previous hedger thread
+        if hasattr(self, 'monitor_thread') and self.monitor_thread.is_alive():
+            self.stop_auto_hedger()  # Stops current monitoring
+
         # Log monitoring start
         self.logs_text.insert(tk.END, f"Monitoring {stock_symbol} with target delta {target_delta}...\n")
 
-        # Start the event loop for real-time monitoring
+        # Start new monitoring thread
         self.monitor_thread = threading.Thread(target=self.run_async_monitor_and_hedge, args=(stock_symbol, target_delta, max_order_qty))
         self.monitor_thread.start()
 
+    def stop_auto_hedger(self):
+        """
+        Stops the auto-hedger by terminating the current monitoring thread.
+        """
+        if hasattr(self, 'monitor_thread') and self.monitor_thread.is_alive():
+            self.logs_text.insert(tk.END, "Stopping current auto-hedger...\n")
+            self.stop_event.set()  # Set an event to stop the thread
+            self.monitor_thread.join(1)  # Join and stop the thread
 
     def run_async_monitor_and_hedge(self, stock_symbol, target_delta, max_order_qty):
         """
         Create a new asyncio event loop and run the asynchronous hedging function in it.
+        Monitor for stop signals.
         """
+        self.stop_event = threading.Event()  # Create stop event
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(monitor_and_hedge(stock_symbol, target_delta, max_order_qty))
+        try:
+            while not self.stop_event.is_set():
+                loop.run_until_complete(monitor_and_hedge(stock_symbol, target_delta, max_order_qty))
+        except Exception as e:
+            self.logs_text.insert(tk.END, f"Error in Auto-Hedger: {e}\n")
 
     def monitor_and_hedge_real_time(self, stock_symbol, target_delta, max_order_qty):
         """

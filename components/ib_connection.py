@@ -27,22 +27,53 @@ def get_market_data_for_iv(symbol):
 
     stock_data = ib.reqMktData(stock)
 
+    # Fetch option chain for the symbol
     chains = ib.reqSecDefOptParams(stock.symbol, '', stock.secType, stock.conId)
     chain = chains[0]
 
-    closest_strike = min(chain.strikes, key=lambda x: abs(x - stock_data.marketPrice()))
-    nearest_expiry = sorted(chain.expirations)[0]
+    # Choose a valid strike price near the current stock price
+    strikes = sorted([strike for strike in chain.strikes if abs(strike - stock_data.marketPrice()) < stock_data.marketPrice() * 0.5])
+    if not strikes:
+        raise ValueError(f"No valid strikes available for {symbol} near price {stock_data.marketPrice()}")
+    
+    # Get the closest valid strike
+    closest_strike = min(strikes, key=lambda x: abs(x - stock_data.marketPrice()))
 
+    # Choose the nearest expiration date
+    expirations = sorted(chain.expirations)
+    if not expirations:
+        raise ValueError("No valid expirations available")
+
+    nearest_expiry = expirations[0]
+
+    # Define the option contract (Call Option example)
     option = Option(symbol, nearest_expiry, closest_strike, 'C', 'SMART')
+
+    # Qualify the option contract
     ib.qualifyContracts(option)
+
+    # Fetch option market data
     option_data = ib.reqMktData(option)
 
     return stock_data, option_data
 
-def get_historical_data_for_rv(symbol):
+def get_historical_data_for_rv(symbol, duration='1 D', bar_size='1 min'):
     """
-    Fetch historical price data for RV calculation.
+    Fetch historical price data for the specified symbol.
+    This is used for calculating Realized Volatility (RV).
     """
     stock = Stock(symbol, 'SMART', 'USD')
-    bars = ib.reqHistoricalData(stock, endDateTime='', durationStr='1 D', barSizeSetting='1 min')
-    return [bar.close for bar in bars]
+
+    # Fetch historical data (e.g., 'MIDPOINT' or 'TRADES')
+    bars = ib.reqHistoricalData(
+        stock,
+        endDateTime='',
+        durationStr=duration,  # 1 day by default
+        barSizeSetting=bar_size,  # 1-minute bars
+        whatToShow='MIDPOINT',  # Fetch the midpoint price
+        useRTH=True  # Only use Regular Trading Hours
+    )
+
+    # Extract the closing prices
+    prices = [bar.close for bar in bars]
+    return prices
