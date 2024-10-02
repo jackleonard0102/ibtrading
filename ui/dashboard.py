@@ -1,8 +1,14 @@
 import tkinter as tk
 from tkinter import ttk
+import time
+import threading
 from components.ib_connection import get_portfolio_positions, get_market_data_for_iv, get_historical_data_for_rv
+from components.auto_hedger import monitor_and_hedge
 from components.iv_calculator import calculate_iv
 from components.rv_calculator import calculate_realized_volatility
+import matplotlib.pyplot as plt
+import asyncio
+
 
 class Dashboard(tk.Frame):
     def __init__(self, parent):
@@ -58,9 +64,20 @@ class Dashboard(tk.Frame):
         self.rv_value = ttk.Label(self.ivrv_frame, text="Calculating...")
         self.rv_value.grid(row=1, column=1, padx=10, pady=10)
 
-        # Button to update IV and RV
+        # Dropdown for time window selection
+        self.rv_time_var = tk.StringVar()
+        self.rv_time_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.rv_time_var)
+        self.rv_time_dropdown['values'] = ['15 min', '30 min', '1 hour', '2 hours']
+        self.rv_time_dropdown.grid(row=2, column=1, padx=10, pady=10)
+        self.rv_time_dropdown.current(0)
+
+        # Button to update IV and RV data
         self.update_button = ttk.Button(self.ivrv_frame, text="Update Data", command=self.update_data)
-        self.update_button.grid(row=2, column=0, columnspan=2, padx=10, pady=10)
+        self.update_button.grid(row=3, column=0, columnspan=2, padx=10, pady=10)
+
+        # Button for plotting RV graph
+        self.plot_button = ttk.Button(self.ivrv_frame, text="Show RV Graph", command=self.show_rv_graph)
+        self.plot_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
 
         # Section for Activity Logs
         self.logs_frame = ttk.LabelFrame(self, text="Activity Logs")
@@ -97,14 +114,19 @@ class Dashboard(tk.Frame):
             iv = calculate_iv(S, K, T, r, market_price)
             self.iv_value.config(text=f"{iv:.4f}")
 
+            # Fetch and calculate RV with custom time window
+            selected_rv_time = self.rv_time_var.get()
+            window_mapping = {'15 min': 15, '30 min': 30, '1 hour': 60, '2 hours': 120}
+            window = window_mapping.get(selected_rv_time, 30)  # Default to 30 minutes
+
             price_data = get_historical_data_for_rv(stock_symbol)
-            rv = calculate_realized_volatility(price_data, window=30)
+            rv = calculate_realized_volatility(price_data, window=window)
             self.rv_value.config(text=f"{rv:.4f}")
 
         except Exception as e:
             self.iv_value.config(text="Error fetching IV")
             self.rv_value.config(text="Error fetching RV")
-            print(f"Error fetching data: {e}")
+            print(f"Error: {e}")
 
     def run_auto_hedger(self):
         """
@@ -114,6 +136,44 @@ class Dashboard(tk.Frame):
         target_delta = float(self.target_delta_entry.get())
         max_order_qty = int(self.max_order_qty_entry.get())
 
-        # Simulate hedge execution
-        self.logs_text.insert(tk.END, f"Running auto-hedger for {stock_symbol} with target delta {target_delta} and max order {max_order_qty}...\n")
-        # Implement hedger logic here or call relevant functions for hedging
+        # Log monitoring start
+        self.logs_text.insert(tk.END, f"Monitoring {stock_symbol} with target delta {target_delta}...\n")
+
+        # Start the event loop for real-time monitoring
+        self.monitor_thread = threading.Thread(target=self.run_async_monitor_and_hedge, args=(stock_symbol, target_delta, max_order_qty))
+        self.monitor_thread.start()
+
+
+    def run_async_monitor_and_hedge(self, stock_symbol, target_delta, max_order_qty):
+        """
+        Create a new asyncio event loop and run the asynchronous hedging function in it.
+        """
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(monitor_and_hedge(stock_symbol, target_delta, max_order_qty))
+
+    def monitor_and_hedge_real_time(self, stock_symbol, target_delta, max_order_qty):
+        """
+        Monitor the delta in real-time and adjust as needed. Log each action.
+        """
+        while True:
+            # Perform delta hedging and log the action
+            hedge_qty = monitor_and_hedge(stock_symbol, target_delta, max_order_qty)
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+            log_msg = f"{timestamp} - Adjusted delta by {hedge_qty}, Qty: {hedge_qty}\n"
+            self.logs_text.insert(tk.END, log_msg)
+
+            time.sleep(60)  # Check every minute
+
+    def show_rv_graph(self):
+        """
+        Show a graph of RV over time using matplotlib.
+        """
+        price_data = get_historical_data_for_rv(self.stock_var.get())
+        rv_values = calculate_realized_volatility(price_data, window=30)
+
+        plt.plot(rv_values)
+        plt.title("Realized Volatility over Time")
+        plt.xlabel("Time")
+        plt.ylabel("RV")
+        plt.show()
