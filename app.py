@@ -1,5 +1,4 @@
 import tkinter as tk
-from tkinter import ttk
 from ui.dashboard import Dashboard
 from components.ib_connection import connect_ib
 
