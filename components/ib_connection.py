@@ -9,8 +9,12 @@ def connect_ib(port=7497):
     try:
         ib.connect('127.0.0.1', port, clientId=1)
         print("Connected to IBKR!")
+        return True
     except Exception as e:
         print(f"Error connecting to IBKR: {e}")
+        print("Please ensure that TWS or IB Gateway is running and configured to accept API connections.")
+        print(f"Check if the port {port} is correct and matches the one configured in TWS or IB Gateway.")
+        return False
 
 def get_portfolio_positions():
     """
