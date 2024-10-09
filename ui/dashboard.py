@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import threading
-from components.ib_connection import get_portfolio_positions
+from components.ib_connection import get_portfolio_positions, ib
 from components.auto_hedger import start_auto_hedger, stop_auto_hedger, get_hedge_log, is_hedger_running
 from components.iv_calculator import get_iv, get_stock_list
 from components.rv_calculator import get_latest_rv
@@ -18,8 +18,11 @@ class Dashboard(tk.Frame):
         self.update_hedger_status()
 
     def create_widgets(self):
+        # Scrollable Frame for better responsiveness
+        scrollable_frame = self.create_scrollable_frame()
+
         # Portfolio Section
-        self.portfolio_frame = ttk.LabelFrame(self, text="Portfolio")
+        self.portfolio_frame = ttk.LabelFrame(scrollable_frame, text="Portfolio")
         self.portfolio_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
 
         # Create a treeview for portfolio display
@@ -33,7 +36,7 @@ class Dashboard(tk.Frame):
         self.portfolio_tree.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
 
         # Auto Hedger Section
-        self.hedger_frame = ttk.LabelFrame(self, text="Auto Hedger")
+        self.hedger_frame = ttk.LabelFrame(scrollable_frame, text="Auto Hedger")
         self.hedger_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
 
         # Stock selection dropdown
@@ -68,7 +71,7 @@ class Dashboard(tk.Frame):
         self.hedge_button = ttk.Button(self.hedger_frame, text="Run Auto-Hedger", command=self.run_auto_hedger)
         self.hedge_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
 
-        # Add Stop Auto-Hedger Button
+        # Stop Auto-Hedger Button
         self.stop_button = ttk.Button(self.hedger_frame, text="Stop Auto-Hedger", command=self.stop_auto_hedger)
         self.stop_button.grid(row=5, column=0, columnspan=2, padx=10, pady=10)
 
@@ -76,8 +79,8 @@ class Dashboard(tk.Frame):
         self.hedger_status_label = ttk.Label(self.hedger_frame, text="Auto-Hedger Status: OFF", foreground="red")
         self.hedger_status_label.grid(row=6, column=0, columnspan=2, padx=10, pady=10)
 
-        # Section for IV/RV Calculator
-        self.ivrv_frame = ttk.LabelFrame(self, text="IV / RV Calculator")
+        # IV/RV Calculator Section
+        self.ivrv_frame = ttk.LabelFrame(scrollable_frame, text="IV / RV Calculator")
         self.ivrv_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
 
         # Allow multiple symbols selection
@@ -109,21 +112,21 @@ class Dashboard(tk.Frame):
         self.update_button = ttk.Button(self.ivrv_frame, text="Update Data", command=self.update_data)
         self.update_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
 
-        # Section for Activity Logs
-        self.logs_frame = ttk.LabelFrame(self, text="Activity Logs")
+        # Activity Logs Section
+        self.logs_frame = ttk.LabelFrame(scrollable_frame, text="Activity Logs")
         self.logs_frame.grid(row=3, column=0, padx=10, pady=10, sticky="nsew")
 
         self.logs_text = tk.Text(self.logs_frame, height=10, width=50)
         self.logs_text.grid(row=0, column=0, padx=10, pady=10)
 
-        # Add Clear Logs button
+        # Clear Logs button
         self.clear_logs_button = ttk.Button(self.logs_frame, text="Clear Logs", command=self.clear_logs)
         self.clear_logs_button.grid(row=1, column=0, padx=10, pady=10)
 
         # Add contact information
-        contact_label = ttk.Label(self, text="Contact: ")
+        contact_label = ttk.Label(scrollable_frame, text="Contact: ")
         contact_label.grid(row=4, column=0, sticky="w", padx=10, pady=5)
-        contact_link = ttk.Label(self, text="fazeenlancer@gmail.com", foreground="blue", cursor="hand2")
+        contact_link = ttk.Label(scrollable_frame, text="fazeenlancer@gmail.com", foreground="blue", cursor="hand2")
         contact_link.grid(row=4, column=0, sticky="w", padx=100, pady=5)
         contact_link.bind("<Button-1>", lambda e: self.open_email())
 
@@ -166,13 +169,23 @@ class Dashboard(tk.Frame):
             positions = get_portfolio_positions()
             for position in positions:
                 if position.contract.secType == 'STK':
+                    # Fetch market price separately using reqMktData
+                    stock = position.contract
+                    market_data = ib.reqMktData(stock)
+                    ib.sleep(2)  # Allow more time for market data to arrive
+
+                    # Use the last price or bid/ask price as fallback
+                    market_price = market_data.last or market_data.bid or market_data.ask or 0
+                    market_value = position.position * market_price
+                    unrealized_pnl = market_value - (position.position * position.avgCost)
+
                     self.portfolio_tree.insert('', 'end', values=(
                         position.contract.symbol,
                         position.position,
                         f"{position.avgCost:.2f}",
-                        f"{position.marketPrice:.2f}",
-                        f"{position.marketValue:.2f}",
-                        f"{position.unrealizedPNL:.2f}"
+                        f"{market_price:.2f}",
+                        f"{market_value:.2f}",
+                        f"{unrealized_pnl:.2f}"
                     ))
         except Exception as e:
             self.log_message(f"Error updating portfolio display: {str(e)}")
@@ -220,7 +233,10 @@ class Dashboard(tk.Frame):
             self.log_message("Auto-Hedger stopped.")
         else:
             self.log_message("Auto-Hedger is not running.")
+        # Force status update
+        self.hedger_status_label.config(text="Auto-Hedger Status: OFF", foreground="red")
         self.update_hedger_status()
+
 
     def update_hedger_status(self):
         if is_hedger_running():
@@ -259,8 +275,20 @@ class Dashboard(tk.Frame):
         else:
             return 30  # default to 30 minutes
 
-if __name__ == '__main__':
-    root = tk.Tk()
-    app = Dashboard(root)
-    app.pack(fill=tk.BOTH, expand=True)
-    root.mainloop()
+    def create_scrollable_frame(self):
+        canvas = tk.Canvas(self)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        return scrollable_frame
