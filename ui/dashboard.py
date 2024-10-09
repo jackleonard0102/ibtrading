@@ -1,18 +1,20 @@
 import tkinter as tk
 from tkinter import ttk
 import threading
-from components.ib_connection import get_portfolio_positions, get_market_data_for_iv, get_historical_data_for_rv
-from components.auto_hedger import start_auto_hedger, stop_auto_hedger
-from components.iv_calculator import get_iv
-from components.rv_calculator import calculate_realized_volatility, get_latest_rv
+from components.ib_connection import get_portfolio_positions
+from components.auto_hedger import start_auto_hedger, stop_auto_hedger, get_hedge_log
+from components.iv_calculator import get_iv, get_stock_list
+from components.rv_calculator import get_latest_rv
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import webbrowser
 
 class Dashboard(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.hedger_thread = None
         self.create_widgets()
+        self.update_hedge_log()
 
     def create_widgets(self):
         # Portfolio Section - Auto Hedger
@@ -25,9 +27,6 @@ class Dashboard(tk.Frame):
         self.stock_var = tk.StringVar()
         self.stock_dropdown = ttk.Combobox(self.portfolio_frame, textvariable=self.stock_var)
         self.stock_dropdown.grid(row=0, column=1, padx=10, pady=10)
-
-        # Load portfolio positions dynamically
-        self.load_stocks()
 
         # Target Delta input
         self.target_delta_label = ttk.Label(self.portfolio_frame, text="Target Delta:")
@@ -69,7 +68,7 @@ class Dashboard(tk.Frame):
         # Allow multiple symbols selection
         self.symbols_label = ttk.Label(self.ivrv_frame, text="Select Symbols:")
         self.symbols_label.grid(row=0, column=0, padx=10, pady=10)
-        self.symbols_var = tk.StringVar(value=["AAPL", "AMZN", "NVDA", "QQQ"])
+        self.symbols_var = tk.StringVar()
         self.symbols_listbox = tk.Listbox(self.ivrv_frame, listvariable=self.symbols_var, selectmode='multiple', height=5)
         self.symbols_listbox.grid(row=0, column=1, padx=10, pady=10)
 
@@ -106,35 +105,61 @@ class Dashboard(tk.Frame):
         self.logs_text = tk.Text(self.logs_frame, height=10, width=50)
         self.logs_text.grid(row=0, column=0, padx=10, pady=10)
 
+        # Add Clear Logs button
+        self.clear_logs_button = ttk.Button(self.logs_frame, text="Clear Logs", command=self.clear_logs)
+        self.clear_logs_button.grid(row=1, column=0, padx=10, pady=10)
+
+        # Add contact information
+        contact_label = ttk.Label(self, text="Contact: ")
+        contact_label.grid(row=3, column=0, sticky="w", padx=10, pady=5)
+        contact_link = ttk.Label(self, text="fazeenlancer@gmail.com", foreground="blue", cursor="hand2")
+        contact_link.grid(row=3, column=0, sticky="w", padx=100, pady=5)
+        contact_link.bind("<Button-1>", lambda e: self.open_email())
+
+        # Load stocks after creating all widgets
+        self.load_stocks()
+
     def load_stocks(self):
+        self.log_message("Loading stocks...")
         try:
             positions = get_portfolio_positions()
             eligible_symbols = set([p.contract.symbol for p in positions if p.contract.secType == 'STK'])
             self.stock_dropdown['values'] = list(eligible_symbols)
-            self.stock_dropdown.current(0)
+            if eligible_symbols:
+                self.stock_dropdown.current(0)
+                self.log_message(f"Loaded {len(eligible_symbols)} eligible stock positions.")
+            else:
+                self.log_message("No eligible stock positions found.")
         except Exception as e:
+            self.log_message(f"Error fetching positions: {str(e)}")
             self.stock_dropdown['values'] = ["Error fetching positions"]
-            print(f"Error loading portfolio: {e}")
+
+        try:
+            # Load stock list for IV/RV calculator
+            self.log_message("Fetching stock list for IV/RV calculator...")
+            stock_list = get_stock_list()
+            self.symbols_var.set(stock_list)
+            self.log_message(f"Loaded {len(stock_list)} stocks for IV/RV calculator.")
+        except Exception as e:
+            self.log_message(f"Error loading stock list: {str(e)}")
 
     def update_data(self):
         selected_symbols = [self.symbols_listbox.get(i) for i in self.symbols_listbox.curselection()]
         rv_time = self.rv_time_var.get()
 
         for symbol in selected_symbols:
-            self.logs_text.insert(tk.END, f"Fetching data for {symbol}...\n")
+            self.log_message(f"Fetching data for {symbol}...")
             try:
-                stock_data, option_data = get_market_data_for_iv(symbol)
-                iv = get_iv(stock_data, option_data)
+                iv = get_iv(symbol)
                 self.iv_value.config(text=f"{iv:.2%}")
 
-                price_data = get_historical_data_for_rv(symbol)
                 window = self.get_window_size(rv_time)
-                rv = get_latest_rv(price_data, window)
+                rv = get_latest_rv(symbol, window)
                 self.rv_value.config(text=f"{rv:.2%}")
 
-                self.logs_text.insert(tk.END, f"Updated IV and RV for {symbol}\n")
+                self.log_message(f"Updated IV and RV for {symbol}")
             except Exception as e:
-                self.logs_text.insert(tk.END, f"Error updating data for {symbol}: {str(e)}\n")
+                self.log_message(f"Error updating data for {symbol}: {str(e)}")
 
     def run_auto_hedger(self):
         stock_symbol = self.stock_var.get()
@@ -143,25 +168,27 @@ class Dashboard(tk.Frame):
         max_order_qty = int(self.max_order_qty_entry.get())
 
         self.hedger_status_label.config(text="Auto-Hedger Status: ON", foreground="green")
-        self.logs_text.insert(tk.END, f"Starting Auto-Hedger for {stock_symbol}...\n")
+        self.log_message(f"Starting Auto-Hedger for {stock_symbol}...")
+        self.log_message(f"Target Delta: {target_delta}, Delta Change Threshold: {delta_change}, Max Order Qty: {max_order_qty}")
 
         self.hedger_thread = threading.Thread(target=start_auto_hedger, 
                                               args=(stock_symbol, target_delta, delta_change, max_order_qty))
         self.hedger_thread.start()
+        self.update_hedge_log()
 
     def stop_auto_hedger(self):
         if self.hedger_thread and self.hedger_thread.is_alive():
             stop_auto_hedger()
             self.hedger_thread.join()
             self.hedger_status_label.config(text="Auto-Hedger Status: OFF", foreground="red")
-            self.logs_text.insert(tk.END, "Auto-Hedger stopped.\n")
+            self.log_message("Auto-Hedger stopped.")
         else:
-            self.logs_text.insert(tk.END, "Auto-Hedger is not running.\n")
+            self.log_message("Auto-Hedger is not running.")
 
     def show_rv_graph(self):
         selected_symbols = [self.symbols_listbox.get(i) for i in self.symbols_listbox.curselection()]
         if not selected_symbols:
-            self.logs_text.insert(tk.END, "Please select at least one symbol for the RV graph.\n")
+            self.log_message("Please select at least one symbol for the RV graph.")
             return
 
         rv_time = self.rv_time_var.get()
@@ -171,11 +198,10 @@ class Dashboard(tk.Frame):
 
         for symbol in selected_symbols:
             try:
-                price_data = get_historical_data_for_rv(symbol)
-                rv_values = calculate_realized_volatility(price_data, window)
+                rv_values = get_latest_rv(symbol, window)
                 ax.plot(rv_values, label=symbol)
             except Exception as e:
-                self.logs_text.insert(tk.END, f"Error calculating RV for {symbol}: {str(e)}\n")
+                self.log_message(f"Error calculating RV for {symbol}: {str(e)}")
 
         ax.set_title("Realized Volatility over Time")
         ax.set_xlabel("Time")
@@ -201,3 +227,27 @@ class Dashboard(tk.Frame):
             return 120
         else:
             return 30  # default to 30 minutes
+
+    def open_email(self):
+        webbrowser.open('mailto:fazeenlancer@gmail.com')
+
+    def update_hedge_log(self):
+        hedge_log = get_hedge_log()
+        if hedge_log:
+            self.logs_text.delete(1.0, tk.END)
+            for log in hedge_log:
+                self.log_message(log)
+        self.after(1000, self.update_hedge_log)  # Update every 1 second
+
+    def log_message(self, message):
+        self.logs_text.insert(tk.END, message + "\n")
+        self.logs_text.see(tk.END)  # Scroll to the bottom
+
+    def clear_logs(self):
+        self.logs_text.delete(1.0, tk.END)
+
+if __name__ == '__main__':
+    root = tk.Tk()
+    app = Dashboard(root)
+    app.pack(fill=tk.BOTH, expand=True)
+    root.mainloop()
