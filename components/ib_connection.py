@@ -1,4 +1,5 @@
 from ib_insync import IB, Stock, Option
+import datetime
 
 ib = IB()
 
@@ -30,18 +31,30 @@ def get_market_data_for_iv(symbol):
     ib.qualifyContracts(stock)
 
     stock_data = ib.reqMktData(stock)
+    ib.sleep(2)  # Wait longer for market data to arrive
+
+    if stock_data.marketPrice() is None or stock_data.marketPrice() == 0:
+        error_msg = f"Unable to fetch valid market price for {symbol}. "
+        error_msg += f"Last price: {stock_data.last}, Close price: {stock_data.close}, "
+        error_msg += f"Bid: {stock_data.bid}, Ask: {stock_data.ask}"
+        raise ValueError(error_msg)
+
+    market_price = stock_data.marketPrice()
 
     # Fetch option chain for the symbol
     chains = ib.reqSecDefOptParams(stock.symbol, '', stock.secType, stock.conId)
+    if not chains:
+        raise ValueError(f"No option chain available for {symbol}")
+    
     chain = chains[0]
 
     # Choose a valid strike price near the current stock price
-    strikes = sorted([strike for strike in chain.strikes if abs(strike - stock_data.marketPrice()) < stock_data.marketPrice() * 0.5])
+    strikes = [strike for strike in chain.strikes if abs(strike - market_price) / market_price < 0.1]
     if not strikes:
-        raise ValueError(f"No valid strikes available for {symbol} near price {stock_data.marketPrice()}")
+        raise ValueError(f"No valid strikes available for {symbol} near price {market_price}")
     
     # Get the closest valid strike
-    closest_strike = min(strikes, key=lambda x: abs(x - stock_data.marketPrice()))
+    closest_strike = min(strikes, key=lambda x: abs(x - market_price))
 
     # Choose the nearest expiration date
     expirations = sorted(chain.expirations)
@@ -58,6 +71,13 @@ def get_market_data_for_iv(symbol):
 
     # Fetch option market data
     option_data = ib.reqMktData(option)
+    ib.sleep(2)  # Wait longer for market data to arrive
+
+    if option_data.marketPrice() is None or option_data.marketPrice() == 0:
+        error_msg = f"Unable to fetch valid option market price for {symbol}. "
+        error_msg += f"Last price: {option_data.last}, Close price: {option_data.close}, "
+        error_msg += f"Bid: {option_data.bid}, Ask: {option_data.ask}"
+        raise ValueError(error_msg)
 
     return stock_data, option_data
 

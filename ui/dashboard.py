@@ -1,18 +1,17 @@
 import tkinter as tk
 from tkinter import ttk
-import time
 import threading
 from components.ib_connection import get_portfolio_positions, get_market_data_for_iv, get_historical_data_for_rv
-from components.auto_hedger import monitor_and_hedge
-from components.iv_calculator import calculate_iv
-from components.rv_calculator import calculate_realized_volatility
+from components.auto_hedger import start_auto_hedger, stop_auto_hedger
+from components.iv_calculator import get_iv
+from components.rv_calculator import calculate_realized_volatility, get_latest_rv
 import matplotlib.pyplot as plt
-import asyncio
-
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 class Dashboard(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
+        self.hedger_thread = None
         self.create_widgets()
 
     def create_widgets(self):
@@ -108,12 +107,9 @@ class Dashboard(tk.Frame):
         self.logs_text.grid(row=0, column=0, padx=10, pady=10)
 
     def load_stocks(self):
-        """
-        Load portfolio positions dynamically and filter the dropdown to show only eligible stocks.
-        """
         try:
             positions = get_portfolio_positions()
-            eligible_symbols = set([p.contract.symbol for p in positions if p.contract.secType == 'STK'])  # Example filter: only stocks
+            eligible_symbols = set([p.contract.symbol for p in positions if p.contract.secType == 'STK'])
             self.stock_dropdown['values'] = list(eligible_symbols)
             self.stock_dropdown.current(0)
         except Exception as e:
@@ -126,8 +122,19 @@ class Dashboard(tk.Frame):
 
         for symbol in selected_symbols:
             self.logs_text.insert(tk.END, f"Fetching data for {symbol}...\n")
-            # Add logic for updating IV/RV for multiple symbols
-            # Fetch and display IV and RV based on selected symbols and time window
+            try:
+                stock_data, option_data = get_market_data_for_iv(symbol)
+                iv = get_iv(stock_data, option_data)
+                self.iv_value.config(text=f"{iv:.2%}")
+
+                price_data = get_historical_data_for_rv(symbol)
+                window = self.get_window_size(rv_time)
+                rv = get_latest_rv(price_data, window)
+                self.rv_value.config(text=f"{rv:.2%}")
+
+                self.logs_text.insert(tk.END, f"Updated IV and RV for {symbol}\n")
+            except Exception as e:
+                self.logs_text.insert(tk.END, f"Error updating data for {symbol}: {str(e)}\n")
 
     def run_auto_hedger(self):
         stock_symbol = self.stock_var.get()
@@ -135,27 +142,62 @@ class Dashboard(tk.Frame):
         delta_change = float(self.delta_change_entry.get())
         max_order_qty = int(self.max_order_qty_entry.get())
 
-        # Change status to ON
         self.hedger_status_label.config(text="Auto-Hedger Status: ON", foreground="green")
+        self.logs_text.insert(tk.END, f"Starting Auto-Hedger for {stock_symbol}...\n")
 
-        # Implement monitoring and hedging logic here
-        self.logs_text.insert(tk.END, f"Monitoring {stock_symbol} with target delta {target_delta} and delta change {delta_change}...\n")
+        self.hedger_thread = threading.Thread(target=start_auto_hedger, 
+                                              args=(stock_symbol, target_delta, delta_change, max_order_qty))
+        self.hedger_thread.start()
 
     def stop_auto_hedger(self):
-        # Change status to OFF
-        self.hedger_status_label.config(text="Auto-Hedger Status: OFF", foreground="red")
-
-        self.logs_text.insert(tk.END, "Stopping Auto-Hedger...\n")
+        if self.hedger_thread and self.hedger_thread.is_alive():
+            stop_auto_hedger()
+            self.hedger_thread.join()
+            self.hedger_status_label.config(text="Auto-Hedger Status: OFF", foreground="red")
+            self.logs_text.insert(tk.END, "Auto-Hedger stopped.\n")
+        else:
+            self.logs_text.insert(tk.END, "Auto-Hedger is not running.\n")
 
     def show_rv_graph(self):
-        """
-        Show a graph of RV over time using matplotlib.
-        """
-        price_data = get_historical_data_for_rv(self.stock_var.get())
-        rv_values = calculate_realized_volatility(price_data, window=30)
+        selected_symbols = [self.symbols_listbox.get(i) for i in self.symbols_listbox.curselection()]
+        if not selected_symbols:
+            self.logs_text.insert(tk.END, "Please select at least one symbol for the RV graph.\n")
+            return
 
-        plt.plot(rv_values)
-        plt.title("Realized Volatility over Time")
-        plt.xlabel("Time")
-        plt.ylabel("RV")
-        plt.show()
+        rv_time = self.rv_time_var.get()
+        window = self.get_window_size(rv_time)
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        for symbol in selected_symbols:
+            try:
+                price_data = get_historical_data_for_rv(symbol)
+                rv_values = calculate_realized_volatility(price_data, window)
+                ax.plot(rv_values, label=symbol)
+            except Exception as e:
+                self.logs_text.insert(tk.END, f"Error calculating RV for {symbol}: {str(e)}\n")
+
+        ax.set_title("Realized Volatility over Time")
+        ax.set_xlabel("Time")
+        ax.set_ylabel("RV")
+        ax.legend()
+
+        # Create a new top-level window for the graph
+        graph_window = tk.Toplevel(self)
+        graph_window.title("Realized Volatility Graph")
+
+        canvas = FigureCanvasTkAgg(fig, master=graph_window)
+        canvas.draw()
+        canvas.get_tk_widget().pack()
+
+    def get_window_size(self, rv_time):
+        if rv_time == '15 min':
+            return 15
+        elif rv_time == '30 min':
+            return 30
+        elif rv_time == '1 hour':
+            return 60
+        elif rv_time == '2 hours':
+            return 120
+        else:
+            return 30  # default to 30 minutes
