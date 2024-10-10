@@ -18,12 +18,12 @@ class Dashboard(tk.Frame):
         self.update_hedger_status()
 
     def create_widgets(self):
-        # Scrollable Frame for better responsiveness
-        scrollable_frame = self.create_scrollable_frame()
+        # Set window size
+        self.master.geometry("1250x890")
 
         # Portfolio Section
-        self.portfolio_frame = ttk.LabelFrame(scrollable_frame, text="Portfolio")
-        self.portfolio_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        self.portfolio_frame = ttk.LabelFrame(self, text="Portfolio")
+        self.portfolio_frame.grid(row=0, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
 
         # Create a treeview for portfolio display
         self.portfolio_tree = ttk.Treeview(self.portfolio_frame, columns=('Symbol', 'Position', 'Avg Cost', 'Market Price', 'Market Value', 'Unrealized PNL'), show='headings')
@@ -36,7 +36,7 @@ class Dashboard(tk.Frame):
         self.portfolio_tree.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
 
         # Auto Hedger Section
-        self.hedger_frame = ttk.LabelFrame(scrollable_frame, text="Auto Hedger")
+        self.hedger_frame = ttk.LabelFrame(self, text="Auto Hedger")
         self.hedger_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
 
         # Stock selection dropdown
@@ -80,8 +80,8 @@ class Dashboard(tk.Frame):
         self.hedger_status_label.grid(row=6, column=0, columnspan=2, padx=10, pady=10)
 
         # IV/RV Calculator Section
-        self.ivrv_frame = ttk.LabelFrame(scrollable_frame, text="IV / RV Calculator")
-        self.ivrv_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
+        self.ivrv_frame = ttk.LabelFrame(self, text="IV / RV Calculator")
+        self.ivrv_frame.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
 
         # Allow multiple symbols selection
         self.symbols_label = ttk.Label(self.ivrv_frame, text="Select Symbols:")
@@ -113,8 +113,8 @@ class Dashboard(tk.Frame):
         self.update_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
 
         # Activity Logs Section
-        self.logs_frame = ttk.LabelFrame(scrollable_frame, text="Activity Logs")
-        self.logs_frame.grid(row=3, column=0, padx=10, pady=10, sticky="nsew")
+        self.logs_frame = ttk.LabelFrame(self, text="Activity Logs")
+        self.logs_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
 
         self.logs_text = tk.Text(self.logs_frame, height=10, width=50)
         self.logs_text.grid(row=0, column=0, padx=10, pady=10)
@@ -122,13 +122,6 @@ class Dashboard(tk.Frame):
         # Clear Logs button
         self.clear_logs_button = ttk.Button(self.logs_frame, text="Clear Logs", command=self.clear_logs)
         self.clear_logs_button.grid(row=1, column=0, padx=10, pady=10)
-
-        # Add contact information
-        contact_label = ttk.Label(scrollable_frame, text="Contact: ")
-        contact_label.grid(row=4, column=0, sticky="w", padx=10, pady=5)
-        contact_link = ttk.Label(scrollable_frame, text="fazeenlancer@gmail.com", foreground="blue", cursor="hand2")
-        contact_link.grid(row=4, column=0, sticky="w", padx=100, pady=5)
-        contact_link.bind("<Button-1>", lambda e: self.open_email())
 
         # Load stocks after creating all widgets
         self.load_stocks()
