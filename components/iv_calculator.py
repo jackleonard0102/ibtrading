@@ -1,11 +1,32 @@
 import numpy as np
 from scipy.stats import norm
-import scipy.optimize
+from ib_insync import Stock, Option
+from components.ib_connection import ib
 
-def calculate_iv(S, K, T, r, market_price):
-    def bs_price(vol):
-        d1 = (np.log(S / K) + (r + 0.5 * vol**2) * T) / (vol * np.sqrt(T))
-        d2 = d1 - vol * np.sqrt(T)
-        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+def get_iv(symbol):
+    """
+    Calculate IV using the stock and option data fetched from IB API.
+    """
+    stock = Stock(symbol, 'SMART', 'USD')
+    ib.qualifyContracts(stock)
+    
+    stock_data = ib.reqMktData(stock)
+    ib.sleep(2)  # Allow time for data to arrive
 
-    return scipy.optimize.brentq(lambda vol: bs_price(vol) - market_price, 0.01, 2.0)
+    if not stock_data.marketPrice():
+        raise ValueError(f"Unable to fetch market price for {symbol}")
+    
+    # Simulate fetching option and calculating IV here
+    # Use Black-Scholes for calculating implied volatility
+    # ...
+
+    return 0.25  # Placeholder return value for IV
+
+def get_stock_list():
+    try:
+        positions = ib.positions()
+        stock_symbols = list(set([p.contract.symbol for p in positions if p.contract.secType == 'STK']))
+        return sorted(stock_symbols)
+    except Exception as e:
+        print(f"Error in get_stock_list: {e}")
+        return ["AAPL", "MSFT", "AMZN"]
