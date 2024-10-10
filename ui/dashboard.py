@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 import threading
-from components.ib_connection import get_portfolio_positions, ib
+from components.ib_connection import get_portfolio_positions, ib, define_stock_contract, fetch_market_data_for_stock
 from components.auto_hedger import start_auto_hedger, stop_auto_hedger, get_hedge_log, is_hedger_running
 from components.iv_calculator import get_iv, get_stock_list
 from components.rv_calculator import get_latest_rv
@@ -160,7 +160,9 @@ class Dashboard(tk.Frame):
             self.log_message(f"Error loading stock list: {str(e)}")
 
     def update_portfolio_display(self):
-        # Clear existing items
+        """
+        Update portfolio display by fetching positions from IBKR and qualifying contracts properly.
+        """
         for i in self.portfolio_tree.get_children():
             self.portfolio_tree.delete(i)
 
@@ -168,13 +170,13 @@ class Dashboard(tk.Frame):
         try:
             positions = get_portfolio_positions()
             for position in positions:
-                if position.contract.secType == 'STK':
-                    # Fetch market price separately using reqMktData
-                    stock = position.contract
-                    market_data = ib.reqMktData(stock)
-                    ib.sleep(2)  # Allow more time for market data to arrive
-
-                    # Use the last price or bid/ask price as fallback
+                stock = position.contract
+                # Define the stock contract with explicit details
+                stock_contract = define_stock_contract(stock.symbol)
+                
+                # Fetch market data
+                market_data = fetch_market_data_for_stock(stock_contract)
+                if market_data:
                     market_price = market_data.last or market_data.bid or market_data.ask or 0
                     market_value = position.position * market_price
                     unrealized_pnl = market_value - (position.position * position.avgCost)
@@ -187,6 +189,8 @@ class Dashboard(tk.Frame):
                         f"{market_value:.2f}",
                         f"{unrealized_pnl:.2f}"
                     ))
+                else:
+                    self.log_message(f"Failed to fetch market data for {stock.symbol}.")
         except Exception as e:
             self.log_message(f"Error updating portfolio display: {str(e)}")
 

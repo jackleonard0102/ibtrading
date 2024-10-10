@@ -1,5 +1,5 @@
 from ib_insync import Stock, MarketOrder, LimitOrder
-from components.ib_connection import ib
+from components.ib_connection import ib, define_stock_contract
 import asyncio
 import logging
 import threading
@@ -12,72 +12,57 @@ hedge_log = []
 hedge_thread = None
 
 async def monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_qty):
+    """
+    Monitor aggregate delta for the selected stock position and hedge as needed.
+    """
     global is_running, hedge_log
     is_running = True
-    stock = Stock(stock_symbol, 'SMART', 'USD')
-    await ib.qualifyContractsAsync(stock)
 
-    log_message = f"Starting auto-hedger for {stock_symbol}. Target delta: {target_delta}, Delta change threshold: {delta_change}, Max order quantity: {max_order_qty}"
-    logger.info(log_message)
-    hedge_log.append(log_message)
+    stock_contract = define_stock_contract(stock_symbol)
 
-    account_summary = await ib.accountSummaryAsync()
-    is_paper_account = any(item.value == 'PAPERTRADER' for item in account_summary if item.tag == 'AccountType')
+    try:
+        await ib.qualifyContractsAsync(stock_contract)
+        hedge_log.append(f"Qualified contract for {stock_symbol}")
+    except Exception as e:
+        hedge_log.append(f"Failed to qualify contract for {stock_symbol}: {e}")
+        return
 
     while is_running:
         try:
+            # Fetch current positions
             positions = await ib.reqPositionsAsync()
             aggregate_delta = sum([p.position for p in positions if p.contract.symbol == stock_symbol])
 
-            log_message = f"Current aggregate delta for {stock_symbol}: {aggregate_delta}"
-            logger.info(log_message)
-            hedge_log.append(log_message)
-
+            # Calculate delta difference
             delta_diff = target_delta - aggregate_delta
-            log_message = f"Delta difference: {delta_diff}"
-            logger.info(log_message)
-            hedge_log.append(log_message)
+            hedge_log.append(f"Delta difference for {stock_symbol}: {delta_diff}")
 
             if abs(delta_diff) > delta_change:
                 hedge_qty = min(abs(delta_diff), max_order_qty)
 
+                # Fetch market data before placing an order
+                market_data = await fetch_market_data_for_stock(stock_contract)
+                if not market_data:
+                    hedge_log.append(f"Unable to fetch market data for {stock_symbol}. Skipping hedging.")
+                    continue
+
                 if is_paper_account:
-                    ticker = await ib.reqTickersAsync(stock)
-                    if ticker and ticker[0].marketPrice():
-                        price = ticker[0].marketPrice()
-                        order = LimitOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty, price)
-                    else:
-                        log_message = f"Unable to get market price for {stock_symbol}. Skipping order placement."
-                        logger.warning(log_message)
-                        hedge_log.append(log_message)
-                        continue
+                    price = market_data.last
+                    order = LimitOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty, price)
                 else:
                     order = MarketOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty)
 
-                trade = ib.placeOrder(stock, order)
-                log_message = f"Placed {'limit' if is_paper_account else 'market'} order to {'buy' if delta_diff > 0 else 'sell'} {hedge_qty} shares of {stock_symbol}"
-                logger.info(log_message)
-                hedge_log.append(log_message)
-
-                fill_status = await trade.fillEvent
-                log_message = f"Order filled: {fill_status}"
-                logger.info(log_message)
-                hedge_log.append(log_message)
+                trade = ib.placeOrder(stock_contract, order)
+                hedge_log.append(f"Placed order: {trade}")
             else:
-                log_message = f"No hedging action needed. Delta difference ({delta_diff}) is below threshold."
-                logger.info(log_message)
-                hedge_log.append(log_message)
+                hedge_log.append(f"No hedging needed. Delta difference {delta_diff} is below threshold {delta_change}.")
 
         except Exception as e:
-            log_message = f"Error during hedging: {e}"
-            logger.error(log_message)
-            hedge_log.append(log_message)
+            hedge_log.append(f"Error during hedging for {stock_symbol}: {e}")
 
         await asyncio.sleep(60)
 
-    log_message = "Auto-Hedger has been stopped."
-    logger.info(log_message)
-    hedge_log.append(log_message)
+    hedge_log.append("Auto-Hedger has been stopped.")
 
 def stop_auto_hedger():
     global is_running, hedge_thread
