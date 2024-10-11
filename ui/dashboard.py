@@ -113,9 +113,8 @@ class Dashboard(tk.Frame):
         self.update_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
 
         # Activity Logs Section
-        self.logs_frame = ttk.LabelFrame(self, text="Activity Logs")
-        self.logs_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
-
+        self.logs_frame = ttk.LabelFrame(self, text="Activity Logs", width=400)
+        self.logs_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
         self.logs_text = tk.Text(self.logs_frame, height=10, width=50)
         self.logs_text.grid(row=0, column=0, padx=10, pady=10)
 
@@ -123,8 +122,27 @@ class Dashboard(tk.Frame):
         self.clear_logs_button = ttk.Button(self.logs_frame, text="Clear Logs", command=self.clear_logs)
         self.clear_logs_button.grid(row=1, column=0, padx=10, pady=10)
 
+        # Contact Info Section
+        self.contact_frame = ttk.LabelFrame(self, text="Contact Info", width=400)
+        self.contact_frame.grid(row=2, column=1, padx=10, pady=10, sticky="nsew")
+
+        # Contact Information
+        self.contact_label = ttk.Label(self.contact_frame, text="It's not safe to share detailed information in freelancer, even calling is disabled.")
+        self.contact_label.grid(row=0, column=0, padx=10, pady=10)
+        self.email_label = ttk.Label(self.contact_frame, text="fazeenlancer@gmail.com", foreground="blue", cursor="hand2")
+        self.email_label.grid(row=1, column=0, padx=10, pady=5)
+        self.email_label.bind("<Button-1>", lambda e: self.open_email())
+        self.contact_label.grid(row=2, column=0, padx=10, pady=5)
+        self.contact_label = ttk.Label(self.contact_frame, text="I would like to keep in touch with you via Skype or Google Chat. We can have a call too.")
+        self.contact_label.grid(row=3, column=0, padx=10, pady=5)
+        self.contact_label = ttk.Label(self.contact_frame, text="As I shared my E-mail please feel free to contact.")
+        self.contact_label.grid(row=4, column=0, padx=10, pady=5)
+        self.contact_label = ttk.Label(self.contact_frame, text="And please do not mention this outside communication attampt in freelancer chat.")
+        self.contact_label.grid(row=5, column=0, padx=10, pady=5)
+
         # Load stocks after creating all widgets
         self.load_stocks()
+        
         # Update portfolio display
         self.update_portfolio_display()
 
