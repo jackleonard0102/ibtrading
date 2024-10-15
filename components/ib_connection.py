@@ -1,48 +1,43 @@
-from ib_insync import IB, Stock, Option
+from ib_insync import IB, Stock
 
 ib = IB()
 
 def connect_ib(port=7497):
-    """
-    Connect to IB Gateway or TWS on the specified port.
-    """
     try:
         ib.connect('127.0.0.1', port, clientId=1)
         print("Connected to IBKR!")
+        return True
     except Exception as e:
         print(f"Error connecting to IBKR: {e}")
+        return False
+
+def define_stock_contract(symbol, exchange='SMART', currency='USD'):
+    return Stock(symbol, exchange, currency)
 
 def get_portfolio_positions():
-    """
-    Fetch all portfolio positions dynamically.
-    """
     return ib.positions()
 
-def get_market_data_for_iv(symbol):
+def fetch_market_data_for_stock(stock_contract):
+    try:
+        ib.qualifyContracts(stock_contract)
+        return ib.reqMktData(stock_contract)
+    except Exception as e:
+        print(f"Error fetching market data for {stock_contract.symbol}: {e}")
+        return None
+
+def get_delta(stock_contract):
     """
-    Fetch the current market data and option chain for the specified symbol.
+    Fetch delta for options, return 0 for stocks.
     """
-    stock = Stock(symbol, 'SMART', 'USD')
-    ib.qualifyContracts(stock)
+    try:
+        market_data = ib.reqMktData(stock_contract, '', False, False)
+        ib.sleep(2)  # Wait for the market data to populate
 
-    stock_data = ib.reqMktData(stock)
+        if stock_contract.secType == 'OPT':
+            return market_data.modelGreeks.delta if hasattr(market_data.modelGreeks, 'delta') else 0
+        else:
+            return 0  # For stocks, delta doesn't apply
 
-    chains = ib.reqSecDefOptParams(stock.symbol, '', stock.secType, stock.conId)
-    chain = chains[0]
-
-    closest_strike = min(chain.strikes, key=lambda x: abs(x - stock_data.marketPrice()))
-    nearest_expiry = sorted(chain.expirations)[0]
-
-    option = Option(symbol, nearest_expiry, closest_strike, 'C', 'SMART')
-    ib.qualifyContracts(option)
-    option_data = ib.reqMktData(option)
-
-    return stock_data, option_data
-
-def get_historical_data_for_rv(symbol):
-    """
-    Fetch historical price data for RV calculation.
-    """
-    stock = Stock(symbol, 'SMART', 'USD')
-    bars = ib.reqHistoricalData(stock, endDateTime='', durationStr='1 D', barSizeSetting='1 min')
-    return [bar.close for bar in bars]
+    except Exception as e:
+        print(f"Error fetching delta for {stock_contract.symbol}: {e}")
+        return 0
