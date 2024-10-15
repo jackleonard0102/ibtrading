@@ -24,12 +24,13 @@ async def monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_
         hedge_log.append(f"Failed to qualify contract for {stock_symbol}: {e}")
         return
 
-    while is_running:  # This loop will stop when is_running is set to False
+    while is_running:
         try:
-            # Fetch the delta from the backend
-            current_delta = await get_delta(stock_contract)
+            positions = await ib.reqPositionsAsync()
+            # Only sum the delta for the relevant symbol
+            aggregate_delta = sum([get_delta(p.contract) for p in positions if p.contract.symbol == stock_symbol])
 
-            delta_diff = target_delta - current_delta
+            delta_diff = target_delta - aggregate_delta
             hedge_log.append(f"Delta difference for {stock_symbol}: {delta_diff}")
 
             if abs(delta_diff) > delta_change:
@@ -37,12 +38,7 @@ async def monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_
                 market_data = await fetch_market_data_for_stock(stock_contract)
 
                 if market_data:
-                    if is_paper_account:
-                        price = market_data.last
-                        order = LimitOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty, price)
-                    else:
-                        order = MarketOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty)
-
+                    order = MarketOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty)
                     trade = ib.placeOrder(stock_contract, order)
                     hedge_log.append(f"Placed order: {trade}")
                 else:
@@ -53,7 +49,7 @@ async def monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_
         except Exception as e:
             hedge_log.append(f"Error during hedging for {stock_symbol}: {e}")
 
-        await asyncio.sleep(10)  # Continue to fetch data faster for hedger
+        await asyncio.sleep(60)
 
     hedge_log.append("Auto-Hedger has been stopped.")
 

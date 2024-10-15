@@ -17,7 +17,7 @@ class Dashboard(tk.Frame):
 
     def create_widgets(self):
         # Set window size
-        self.master.geometry("1250x890")
+        self.master.geometry("1630x945")
 
         # Portfolio Section
         self.portfolio_frame = ttk.LabelFrame(self, text="Portfolio")
@@ -184,9 +184,11 @@ class Dashboard(tk.Frame):
             positions = get_portfolio_positions()
             for position in positions:
                 stock = position.contract
+
+                # Define the stock/option contract with explicit details
                 stock_contract = define_stock_contract(stock.symbol)
 
-                # Fetch market data and delta
+                # Fetch market data
                 market_data = fetch_market_data_for_stock(stock_contract)
                 delta = get_delta(stock_contract)
 
@@ -197,9 +199,9 @@ class Dashboard(tk.Frame):
 
                     self.portfolio_tree.insert('', 'end', values=(
                         position.contract.symbol,
-                        position.contract.secType,
+                        position.contract.secType,  # Show STK or OPT
                         position.position,
-                        f"{delta:.2f}",  # Display delta here
+                        f"{delta:.2f}",  # Show delta
                         f"{position.avgCost:.2f}",
                         f"{market_price:.2f}",
                         f"{market_value:.2f}",
@@ -207,11 +209,12 @@ class Dashboard(tk.Frame):
                     ))
                 else:
                     self.log_message(f"Failed to fetch market data for {stock.symbol}.")
+
         except Exception as e:
             self.log_message(f"Error updating portfolio display: {str(e)}")
 
         # Schedule the next update
-        self.after(10000, self.update_portfolio_display)  # Update every 10 seconds
+        self.after(5000, self.update_portfolio_display)  # Update every 5 seconds
 
     def update_data(self):
         selected_symbol = self.symbols_var.get()
