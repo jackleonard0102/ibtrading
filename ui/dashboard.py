@@ -17,7 +17,7 @@ class Dashboard(tk.Frame):
 
     def create_widgets(self):
         # Set window size
-        self.master.geometry("1630x945")
+        self.master.geometry("1645x940")
 
         # Portfolio Section
         self.portfolio_frame = ttk.LabelFrame(self, text="Portfolio")
@@ -89,13 +89,12 @@ class Dashboard(tk.Frame):
         self.ivrv_frame = ttk.LabelFrame(self, text="IV / RV Calculator")
         self.ivrv_frame.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
 
-        # Allow multiple symbols selection (Fixing the bug: single selection)
-        self.symbols_label = ttk.Label(self.ivrv_frame, text="Select Symbol:")
-        self.symbols_label.grid(row=0, column=0, padx=10, pady=10)
-        self.symbols_var = tk.StringVar()
-        self.symbols_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.symbols_var, state="readonly")
-        self.symbols_dropdown.grid(row=0, column=1, padx=10, pady=10)
-
+        # Dropdown for symbol selection
+        self.symbol_var = tk.StringVar()
+        self.symbol_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.symbol_var)
+        self.symbol_dropdown['values'] = get_stock_list()
+        self.symbol_dropdown.grid(row=0, column=1, padx=10, pady=10)
+        
         # Labels for IV and RV
         self.iv_label = ttk.Label(self.ivrv_frame, text="Implied Volatility (IV):")
         self.iv_label.grid(row=1, column=0, padx=10, pady=10)
@@ -107,14 +106,14 @@ class Dashboard(tk.Frame):
         self.rv_value = ttk.Label(self.ivrv_frame, text="Calculating...")
         self.rv_value.grid(row=2, column=1, padx=10, pady=10)
 
-        # Dropdown for time window selection
+        # Dropdown for time window
         self.rv_time_var = tk.StringVar()
         self.rv_time_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.rv_time_var)
         self.rv_time_dropdown['values'] = ['15 min', '30 min', '1 hour', '2 hours']
         self.rv_time_dropdown.grid(row=3, column=1, padx=10, pady=10)
         self.rv_time_dropdown.current(0)
 
-        # Button to update IV and RV data
+        # Button to update IV/RV data
         self.update_button = ttk.Button(self.ivrv_frame, text="Update Data", command=self.update_data)
         self.update_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
 
@@ -152,10 +151,10 @@ class Dashboard(tk.Frame):
             positions = get_portfolio_positions()
             eligible_symbols = set([p.contract.symbol for p in positions if p.contract.secType == 'STK'])
             self.stock_dropdown['values'] = list(eligible_symbols)
-            self.symbols_dropdown['values'] = list(eligible_symbols)
+            self.symbol_dropdown['values'] = list(eligible_symbols)
             if eligible_symbols:
                 self.stock_dropdown.current(0)
-                self.symbols_dropdown.current(0)
+                self.symbol_dropdown.current(0)
                 self.log_message(f"Loaded {len(eligible_symbols)} eligible stock positions.")
             else:
                 self.log_message("No eligible stock positions found.")
@@ -167,7 +166,7 @@ class Dashboard(tk.Frame):
             # Load stock list for IV/RV calculator
             self.log_message("Fetching stock list for IV/RV calculator...")
             stock_list = get_stock_list()
-            self.symbols_var.set(stock_list)
+            self.symbol_var.set(stock_list)
             self.log_message(f"Loaded {len(stock_list)} stocks for IV/RV calculator.")
         except Exception as e:
             self.log_message(f"Error loading stock list: {str(e)}")
@@ -217,21 +216,23 @@ class Dashboard(tk.Frame):
         self.after(5000, self.update_portfolio_display)  # Update every 5 seconds
 
     def update_data(self):
-        selected_symbol = self.symbols_var.get()
+        symbol = self.symbol_dropdown.get()
         rv_time = self.rv_time_var.get()
 
-        self.log_message(f"Fetching data for {selected_symbol}...")
+        # Fetch and update IV
         try:
-            iv = get_iv(selected_symbol)
+            iv = get_iv(symbol)
             self.iv_value.config(text=f"{iv:.2%}")
-
-            window = self.get_window_size(rv_time)
-            rv = get_latest_rv(selected_symbol, window)
-            self.rv_value.config(text=f"{rv:.2%}")
-
-            self.log_message(f"Updated IV and RV for {selected_symbol}")
         except Exception as e:
-            self.log_message(f"Error updating data for {selected_symbol}: {str(e)}")
+            self.iv_value.config(text="Error")
+
+        # Fetch and update RV
+        try:
+            window = self.get_window_size(rv_time)
+            rv = get_latest_rv(symbol, window)
+            self.rv_value.config(text=f"{rv:.2%}")
+        except Exception as e:
+            self.rv_value.config(text="Error")
 
     def run_auto_hedger(self):
         stock_symbol = self.stock_var.get()

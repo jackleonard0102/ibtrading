@@ -26,30 +26,34 @@ async def monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_
 
     while is_running:
         try:
+            # Fetch current positions
             positions = await ib.reqPositionsAsync()
-            # Only sum the delta for the relevant symbol
             aggregate_delta = sum([get_delta(p.contract) for p in positions if p.contract.symbol == stock_symbol])
 
+            # Calculate delta difference
             delta_diff = target_delta - aggregate_delta
             hedge_log.append(f"Delta difference for {stock_symbol}: {delta_diff}")
 
             if abs(delta_diff) > delta_change:
                 hedge_qty = min(abs(delta_diff), max_order_qty)
-                market_data = await fetch_market_data_for_stock(stock_contract)
 
-                if market_data:
-                    order = MarketOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty)
-                    trade = ib.placeOrder(stock_contract, order)
-                    hedge_log.append(f"Placed order: {trade}")
-                else:
+                # Fetch market data before placing an order
+                market_data = await fetch_market_data_for_stock(stock_contract)
+                if not market_data:
                     hedge_log.append(f"Unable to fetch market data for {stock_symbol}. Skipping hedging.")
+                    continue
+
+                # Place order based on delta difference
+                order = MarketOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty)
+                trade = ib.placeOrder(stock_contract, order)
+                hedge_log.append(f"Placed order: {trade}")
             else:
                 hedge_log.append(f"No hedging needed. Delta difference {delta_diff} is below threshold {delta_change}.")
 
         except Exception as e:
             hedge_log.append(f"Error during hedging for {stock_symbol}: {e}")
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(60)  # Wait before the next iteration
 
     hedge_log.append("Auto-Hedger has been stopped.")
 

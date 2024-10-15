@@ -30,13 +30,19 @@ def get_delta(stock_contract):
     Fetch delta for options, return 0 for stocks.
     """
     try:
+        # Request market data
         market_data = ib.reqMktData(stock_contract, '', False, False)
-        ib.sleep(2)  # Wait for the market data to populate
+        ib.sleep(2)  # Wait for market data
 
+        # Check if the contract is an option
         if stock_contract.secType == 'OPT':
-            return market_data.modelGreeks.delta if hasattr(market_data.modelGreeks, 'delta') else 0
+            if market_data and hasattr(market_data, 'modelGreeks'):
+                # Return the delta from modelGreeks
+                return market_data.modelGreeks.delta if market_data.modelGreeks else 0
+            else:
+                return 0
         else:
-            return 0  # For stocks, delta doesn't apply
+            return 0  # No delta for stocks
 
     except Exception as e:
         print(f"Error fetching delta for {stock_contract.symbol}: {e}")
