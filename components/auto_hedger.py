@@ -1,5 +1,5 @@
 from ib_insync import Stock, MarketOrder, LimitOrder
-from components.ib_connection import ib, define_stock_contract
+from components.ib_connection import ib, define_stock_contract, fetch_market_data_for_stock, get_delta
 import asyncio
 import logging
 import threading
@@ -12,9 +12,6 @@ hedge_log = []
 hedge_thread = None
 
 async def monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_qty):
-    """
-    Monitor aggregate delta for the selected stock position and hedge as needed.
-    """
     global is_running, hedge_log
     is_running = True
 
@@ -27,66 +24,56 @@ async def monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_
         hedge_log.append(f"Failed to qualify contract for {stock_symbol}: {e}")
         return
 
-    while is_running:
+    while is_running:  # This loop will stop when is_running is set to False
         try:
-            # Fetch current positions
-            positions = await ib.reqPositionsAsync()
-            aggregate_delta = sum([p.position for p in positions if p.contract.symbol == stock_symbol])
+            # Fetch the delta from the backend
+            current_delta = await get_delta(stock_contract)
 
-            # Calculate delta difference
-            delta_diff = target_delta - aggregate_delta
+            delta_diff = target_delta - current_delta
             hedge_log.append(f"Delta difference for {stock_symbol}: {delta_diff}")
 
             if abs(delta_diff) > delta_change:
                 hedge_qty = min(abs(delta_diff), max_order_qty)
-
-                # Fetch market data before placing an order
                 market_data = await fetch_market_data_for_stock(stock_contract)
-                if not market_data:
-                    hedge_log.append(f"Unable to fetch market data for {stock_symbol}. Skipping hedging.")
-                    continue
 
-                if is_paper_account:
-                    price = market_data.last
-                    order = LimitOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty, price)
+                if market_data:
+                    if is_paper_account:
+                        price = market_data.last
+                        order = LimitOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty, price)
+                    else:
+                        order = MarketOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty)
+
+                    trade = ib.placeOrder(stock_contract, order)
+                    hedge_log.append(f"Placed order: {trade}")
                 else:
-                    order = MarketOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty)
-
-                trade = ib.placeOrder(stock_contract, order)
-                hedge_log.append(f"Placed order: {trade}")
+                    hedge_log.append(f"Unable to fetch market data for {stock_symbol}. Skipping hedging.")
             else:
                 hedge_log.append(f"No hedging needed. Delta difference {delta_diff} is below threshold {delta_change}.")
 
         except Exception as e:
             hedge_log.append(f"Error during hedging for {stock_symbol}: {e}")
 
-        await asyncio.sleep(60)
+        await asyncio.sleep(10)  # Continue to fetch data faster for hedger
 
     hedge_log.append("Auto-Hedger has been stopped.")
 
 def stop_auto_hedger():
     global is_running, hedge_thread
-    is_running = False
-    log_message = "Auto-Hedger stop signal received. It will stop after the current iteration."
-    logger.info(log_message)
-    hedge_log.append(log_message)
+    is_running = False  # Signal to stop the hedging loop
+    print("**** Auto-Hedger stop signal received ****")
+    logger.info("Auto-Hedger stop signal received.")
 
     if hedge_thread and hedge_thread.is_alive():
-        hedge_thread.join(timeout=65)  # Wait for up to 65 seconds
+        hedge_thread.join(timeout=65)  # Wait for the thread to finish
         if hedge_thread.is_alive():
-            log_message = "Auto-Hedger thread did not stop in time. Forcing termination."
-            logger.warning(log_message)
-            hedge_log.append(log_message)
+            logger.warning("Auto-Hedger thread did not stop in time. Forcing termination.")
         else:
-            log_message = "Auto-Hedger has stopped successfully."
-            logger.info(log_message)
-            hedge_log.append(log_message)
+            logger.info("Auto-Hedger has stopped successfully.")
     else:
-        log_message = "Auto-Hedger is not running."
-        logger.info(log_message)
-        hedge_log.append(log_message)
+        logger.info("Auto-Hedger is not running.")
 
 def start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty):
+    print("**** Auto-Hedger started for {stock_symbol} ****")
     global hedge_log, hedge_thread, is_running
     hedge_log = []
     is_running = True
