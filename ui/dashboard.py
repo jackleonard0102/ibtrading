@@ -1,11 +1,24 @@
 import tkinter as tk
 from tkinter import ttk
 import threading
-from components.ib_connection import get_portfolio_positions, define_stock_contract, fetch_market_data_for_stock, get_delta
-from components.auto_hedger import start_auto_hedger, stop_auto_hedger, get_hedge_log, is_hedger_running
+from components.ib_connection import (
+    get_portfolio_positions,
+    define_stock_contract,
+    fetch_market_data_for_stock,
+    get_delta,
+    ib
+)
+from components.auto_hedger import (
+    start_auto_hedger,
+    stop_auto_hedger,
+    get_hedge_log,
+    is_hedger_running
+)
 from components.iv_calculator import get_iv, get_stock_list
 from components.rv_calculator import get_latest_rv
 import webbrowser
+from ib_insync import Stock, Option
+
 
 class Dashboard(tk.Frame):
     def __init__(self, parent):
@@ -24,7 +37,13 @@ class Dashboard(tk.Frame):
         self.portfolio_frame.grid(row=0, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
 
         # Create a treeview for portfolio display (including options)
-        self.portfolio_tree = ttk.Treeview(self.portfolio_frame, columns=('Symbol', 'Type', 'Position', 'Delta', 'Avg Cost', 'Market Price', 'Market Value', 'Unrealized PNL'), show='headings')
+        self.portfolio_tree = ttk.Treeview(
+            self.portfolio_frame,
+            columns=(
+                'Symbol', 'Type', 'Position', 'Delta', 'Avg Cost', 'Market Price', 'Market Value', 'Unrealized PNL'
+            ),
+            show='headings'
+        )
         self.portfolio_tree.heading('Symbol', text='Symbol')
         self.portfolio_tree.heading('Type', text='Type')  # Stock or Option
         self.portfolio_tree.heading('Position', text='Position')
@@ -182,23 +201,38 @@ class Dashboard(tk.Frame):
         try:
             positions = get_portfolio_positions()
             for position in positions:
-                stock = position.contract
+                contract = position.contract
 
-                # Define the stock/option contract with explicit details
-                stock_contract = define_stock_contract(stock.symbol)
+                # Define and qualify the contract properly
+                if contract.secType == 'STK':
+                    contract = define_stock_contract(contract.symbol)
+                elif contract.secType == 'OPT':
+                    # Reconstruct the option contract with necessary fields
+                    contract = Option(
+                        symbol=contract.symbol,
+                        lastTradeDateOrContractMonth=contract.lastTradeDateOrContractMonth,
+                        strike=contract.strike,
+                        right=contract.right,
+                        multiplier=contract.multiplier,
+                        exchange='SMART',
+                        currency='USD'
+                    )
+                    ib.qualifyContracts(contract)
+                else:
+                    continue  # Skip if not stock or option
 
                 # Fetch market data
-                market_data = fetch_market_data_for_stock(stock_contract)
-                delta = get_delta(stock_contract)
+                market_data = fetch_market_data_for_stock(contract)
+                delta = get_delta(position)
 
                 if market_data:
-                    market_price = market_data.last or market_data.bid or market_data.ask or 0
+                    market_price = market_data.last or market_data.close or market_data.bid or market_data.ask or 0
                     market_value = position.position * market_price
                     unrealized_pnl = market_value - (position.position * position.avgCost)
 
                     self.portfolio_tree.insert('', 'end', values=(
-                        position.contract.symbol,
-                        position.contract.secType,  # Show STK or OPT
+                        contract.symbol,
+                        contract.secType,  # Show STK or OPT
                         position.position,
                         f"{delta:.2f}",  # Show delta
                         f"{position.avgCost:.2f}",
@@ -207,14 +241,14 @@ class Dashboard(tk.Frame):
                         f"{unrealized_pnl:.2f}"
                     ))
                 else:
-                    self.log_message(f"Failed to fetch market data for {stock.symbol}.")
+                    self.log_message(f"Failed to fetch market data for {contract.symbol}.")
 
         except Exception as e:
             self.log_message(f"Error updating portfolio display: {str(e)}")
 
         # Schedule the next update
         self.after(5000, self.update_portfolio_display)  # Update every 5 seconds
-
+        
     def update_data(self):
         symbol = self.symbol_dropdown.get()
         rv_time = self.rv_time_var.get()
@@ -222,17 +256,27 @@ class Dashboard(tk.Frame):
         # Fetch and update IV
         try:
             iv = get_iv(symbol)
-            self.iv_value.config(text=f"{iv:.2%}")
+            if iv is not None:
+                self.iv_value.config(text=f"{iv:.2%}")
+            else:
+                self.iv_value.config(text="N/A")
+                self.log_message(f"IV not available for {symbol}")
         except Exception as e:
             self.iv_value.config(text="Error")
+            self.log_message(f"Error updating IV: {str(e)}")
 
         # Fetch and update RV
         try:
             window = self.get_window_size(rv_time)
             rv = get_latest_rv(symbol, window)
-            self.rv_value.config(text=f"{rv:.2%}")
+            if rv is not None:
+                self.rv_value.config(text=f"{rv:.2%}")
+            else:
+                self.rv_value.config(text="N/A")
+                self.log_message(f"RV not available for {symbol}")
         except Exception as e:
             self.rv_value.config(text="Error")
+            self.log_message(f"Error updating RV: {str(e)}")
 
     def run_auto_hedger(self):
         stock_symbol = self.stock_var.get()

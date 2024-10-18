@@ -2,6 +2,7 @@ from ib_insync import Stock, Option
 from components.ib_connection import ib
 import math
 from scipy.stats import norm
+from datetime import datetime
 
 def calculate_iv(S, K, T, r, market_price, call_put='C'):
     # Helper functions to compute d1 and d2
@@ -48,7 +49,7 @@ def get_nearest_option(stock, stock_price):
     if not chains:
         raise ValueError(f"No option chains found for {stock.symbol}")
 
-    chain = chains[0]  # Use the first available chain
+    chain = next((c for c in chains if c.exchange == 'SMART'), chains[0])
     expirations = sorted(chain.expirations)  # Sorted list of expiration dates
     strikes = sorted(chain.strikes)  # Sorted list of available strike prices
 
@@ -77,10 +78,10 @@ def get_iv(symbol):
         ib.qualifyContracts(stock)
 
         # Request market data for the stock
-        stock_data = ib.reqMktData(stock)
+        stock_data = ib.reqMktData(stock, '', False, False)
         ib.sleep(2)
 
-        if stock_data.bid is None or stock_data.ask is None:
+        if stock_data.last is None and (stock_data.bid is None or stock_data.ask is None):
             raise ValueError(f"Could not retrieve market data for {symbol}.")
 
         stock_price = stock_data.last or (stock_data.bid + stock_data.ask) / 2
@@ -89,25 +90,33 @@ def get_iv(symbol):
         option_contract = get_nearest_option(stock, stock_price)
 
         # Fetch option data
-        option_data = ib.reqMktData(option_contract)
+        option_data = ib.reqMktData(option_contract, '', False, False)
         ib.sleep(2)
 
-        if option_data.last is None:
+        if option_data.last is None and (option_data.bid is None or option_data.ask is None):
             raise ValueError(f"Could not retrieve option price for {symbol}.")
 
         # Parameters for Black-Scholes model
         K = option_contract.strike
-        T = 1 / 12  # Time to expiration in years (e.g., 1 month = 1/12 years)
+        # Calculate time to expiration
+        expiration_date = datetime.strptime(option_contract.lastTradeDateOrContractMonth, '%Y%m%d')
+        today = datetime.now()
+        T = (expiration_date - today).days / 365.0  # Time to expiration in years
+        if T <= 0:
+            raise ValueError("Option has already expired.")
+
         r = 0.01  # Assumed risk-free rate (1%)
-        market_price = option_data.last
+        market_price = option_data.last or (option_data.bid + option_data.ask) / 2
+
+        if market_price <= 0:
+            raise ValueError("Invalid option market price.")
 
         # Calculate IV using Black-Scholes
         iv = calculate_iv(stock_price, K, T, r, market_price, call_put='C')
         return iv
     except Exception as e:
         print(f"Error fetching IV for {symbol}: {str(e)}")
-        return 0.0
-
+        return None
 
 def get_stock_list():
     try:
