@@ -23,8 +23,8 @@ from ib_insync import Stock, Option
 class Dashboard(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
-        self.hedger_thread = None
         self.create_widgets()
+        self.update_current_delta()  # Add this line
         self.update_hedge_log()
         self.update_hedger_status()
 
@@ -64,8 +64,9 @@ class Dashboard(tk.Frame):
         self.stock_var = tk.StringVar()
         self.stock_dropdown = ttk.Combobox(self.hedger_frame, textvariable=self.stock_var)
         self.stock_dropdown.grid(row=0, column=1, padx=10, pady=10)
+        self.stock_dropdown.bind("<<ComboboxSelected>>", self.on_stock_selection)  # Bind the event
 
-        # Delta for selected stock
+        # Current Delta
         self.delta_label = ttk.Label(self.hedger_frame, text="Current Delta:")
         self.delta_label.grid(row=1, column=0, padx=10, pady=10)
         self.delta_value = ttk.Label(self.hedger_frame, text="Loading...")
@@ -287,22 +288,11 @@ class Dashboard(tk.Frame):
         self.log_message(f"Starting Auto-Hedger for {stock_symbol}...")
         self.log_message(f"Target Delta: {target_delta}, Delta Change Threshold: {delta_change}, Max Order Qty: {max_order_qty}")
 
-        self.hedger_thread = threading.Thread(target=start_auto_hedger, 
-                                              args=(stock_symbol, target_delta, delta_change, max_order_qty))
-        self.hedger_thread.start()
-        self.update_hedge_log()
-        self.update_hedger_status()
+        start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty)
 
     def stop_auto_hedger(self):
-        if self.hedger_thread and self.hedger_thread.is_alive():
-            stop_auto_hedger()  # This will stop the global thread
-            self.hedger_thread.join()  # Wait for the thread to cleanly finish
-            self.log_message("Auto-Hedger stopped.")
-            self.hedger_status_label.config(text="Auto-Hedger Status: OFF", foreground="red")
-        else:
-            self.log_message("Auto-Hedger is not running.")
-        # Update the status label on the UI
-        self.update_hedger_status()
+        stop_auto_hedger()
+        self.log_message("Auto-Hedger stopped.")
 
     def update_hedger_status(self):
         if is_hedger_running():
@@ -316,7 +306,8 @@ class Dashboard(tk.Frame):
         if hedge_log:
             self.logs_text.delete(1.0, tk.END)
             for log in hedge_log:
-                self.log_message(log)
+                self.logs_text.insert(tk.END, log + "\n")
+            self.logs_text.see(tk.END)
         self.after(1000, self.update_hedge_log)  # Update every 1 second
 
     def log_message(self, message):
@@ -340,3 +331,24 @@ class Dashboard(tk.Frame):
             return 120
         else:
             return 30  # default to 30 minutes
+
+    def update_current_delta(self):
+        stock_symbol = self.stock_var.get()
+        if not stock_symbol:
+            self.delta_value.config(text="N/A")
+            return
+
+        try:
+            # Fetch current positions for the selected stock
+            positions = get_portfolio_positions()
+            positions = [p for p in positions if p.contract.symbol == stock_symbol]
+            aggregate_delta = sum([get_delta(p) for p in positions])
+
+            self.delta_value.config(text=f"{aggregate_delta:.2f}")
+        except Exception as e:
+            self.delta_value.config(text="Error")
+            self.log_message(f"Error updating current delta: {str(e)}")
+
+        self.after(5000, self.update_current_delta)  # Update every 5 seconds
+    def on_stock_selection(self, event):
+        self.update_current_delta()

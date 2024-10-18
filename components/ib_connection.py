@@ -1,3 +1,4 @@
+# ib_connection.py
 from ib_insync import IB, Stock, Option
 
 ib = IB()
@@ -5,6 +6,7 @@ ib = IB()
 def connect_ib(port=7497):
     try:
         ib.connect('127.0.0.1', port, clientId=1)
+        ib.reqMarketDataType(3)  # Use delayed market data
         print("Connected to IBKR!")
         return True
     except Exception as e:
