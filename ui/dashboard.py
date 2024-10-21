@@ -1,6 +1,8 @@
+# dashboard.py
 import tkinter as tk
 from tkinter import ttk
 import threading
+import webbrowser
 from components.ib_connection import (
     get_portfolio_positions,
     define_stock_contract,
@@ -12,21 +14,24 @@ from components.auto_hedger import (
     start_auto_hedger,
     stop_auto_hedger,
     get_hedge_log,
-    is_hedger_running
+    is_hedger_running,
+    get_command,
+    command_queue
 )
 from components.iv_calculator import get_iv, get_stock_list
 from components.rv_calculator import get_latest_rv
-import webbrowser
 from ib_insync import Stock, Option
-
 
 class Dashboard(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.create_widgets()
-        self.update_current_delta()  # Add this line
-        self.update_hedge_log()
+        self.load_stocks()
+        self.update_current_delta()
+        self.update_portfolio_display()
         self.update_hedger_status()
+        self.update_hedge_log()
+        self.process_auto_hedger_commands()
 
     def create_widgets(self):
         # Set window size
@@ -64,7 +69,7 @@ class Dashboard(tk.Frame):
         self.stock_var = tk.StringVar()
         self.stock_dropdown = ttk.Combobox(self.hedger_frame, textvariable=self.stock_var)
         self.stock_dropdown.grid(row=0, column=1, padx=10, pady=10)
-        self.stock_dropdown.bind("<<ComboboxSelected>>", self.on_stock_selection)  # Bind the event
+        self.stock_dropdown.bind("<<ComboboxSelected>>", self.on_stock_selection)
 
         # Current Delta
         self.delta_label = ttk.Label(self.hedger_frame, text="Current Delta:")
@@ -112,7 +117,6 @@ class Dashboard(tk.Frame):
         # Dropdown for symbol selection
         self.symbol_var = tk.StringVar()
         self.symbol_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.symbol_var)
-        self.symbol_dropdown['values'] = get_stock_list()
         self.symbol_dropdown.grid(row=0, column=1, padx=10, pady=10)
         
         # Labels for IV and RV
@@ -140,7 +144,7 @@ class Dashboard(tk.Frame):
         # Activity Logs Section
         self.logs_frame = ttk.LabelFrame(self, text="Activity Logs", width=400)
         self.logs_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
-        self.logs_text = tk.Text(self.logs_frame, height=10, width=50)
+        self.logs_text = tk.Text(self.logs_frame, state='disabled', wrap='word', height=10, width=50)
         self.logs_text.grid(row=0, column=0, padx=10, pady=10)
 
         # Clear Logs button
@@ -157,13 +161,6 @@ class Dashboard(tk.Frame):
         self.email_label = ttk.Label(self.contact_frame, text="fazeenlancer@gmail.com", foreground="blue", cursor="hand2")
         self.email_label.grid(row=1, column=0, padx=10, pady=5)
         self.email_label.bind("<Button-1>", lambda e: self.open_email())
-        self.contact_label.grid(row=2, column=0, padx=10, pady=5)
-
-        # Load stocks after creating all widgets
-        self.load_stocks()
-        
-        # Update portfolio display
-        self.update_portfolio_display()
 
     def load_stocks(self):
         self.log_message("Loading stocks...")
@@ -182,33 +179,18 @@ class Dashboard(tk.Frame):
             self.log_message(f"Error fetching positions: {str(e)}")
             self.stock_dropdown['values'] = ["Error fetching positions"]
 
-        try:
-            # Load stock list for IV/RV calculator
-            self.log_message("Fetching stock list for IV/RV calculator...")
-            stock_list = get_stock_list()
-            self.symbol_var.set(stock_list)
-            self.log_message(f"Loaded {len(stock_list)} stocks for IV/RV calculator.")
-        except Exception as e:
-            self.log_message(f"Error loading stock list: {str(e)}")
-
     def update_portfolio_display(self):
-        """
-        Update portfolio display by fetching positions from IBKR and qualifying contracts properly.
-        """
         for i in self.portfolio_tree.get_children():
             self.portfolio_tree.delete(i)
 
-        # Fetch and display portfolio positions
         try:
             positions = get_portfolio_positions()
             for position in positions:
                 contract = position.contract
 
-                # Define and qualify the contract properly
                 if contract.secType == 'STK':
                     contract = define_stock_contract(contract.symbol)
                 elif contract.secType == 'OPT':
-                    # Reconstruct the option contract with necessary fields
                     contract = Option(
                         symbol=contract.symbol,
                         lastTradeDateOrContractMonth=contract.lastTradeDateOrContractMonth,
@@ -220,11 +202,10 @@ class Dashboard(tk.Frame):
                     )
                     ib.qualifyContracts(contract)
                 else:
-                    continue  # Skip if not stock or option
+                    continue
 
-                # Fetch market data
                 market_data = fetch_market_data_for_stock(contract)
-                delta = get_delta(position)
+                delta = get_delta(position, ib)
 
                 if market_data:
                     market_price = market_data.last or market_data.close or market_data.bid or market_data.ask or 0
@@ -233,9 +214,9 @@ class Dashboard(tk.Frame):
 
                     self.portfolio_tree.insert('', 'end', values=(
                         contract.symbol,
-                        contract.secType,  # Show STK or OPT
+                        contract.secType,
                         position.position,
-                        f"{delta:.2f}",  # Show delta
+                        f"{delta:.2f}",
                         f"{position.avgCost:.2f}",
                         f"{market_price:.2f}",
                         f"{market_value:.2f}",
@@ -247,14 +228,12 @@ class Dashboard(tk.Frame):
         except Exception as e:
             self.log_message(f"Error updating portfolio display: {str(e)}")
 
-        # Schedule the next update
-        self.after(5000, self.update_portfolio_display)  # Update every 5 seconds
-        
+        self.after(5000, self.update_portfolio_display)
+
     def update_data(self):
         symbol = self.symbol_dropdown.get()
         rv_time = self.rv_time_var.get()
 
-        # Fetch and update IV
         try:
             iv = get_iv(symbol)
             if iv is not None:
@@ -266,7 +245,6 @@ class Dashboard(tk.Frame):
             self.iv_value.config(text="Error")
             self.log_message(f"Error updating IV: {str(e)}")
 
-        # Fetch and update RV
         try:
             window = self.get_window_size(rv_time)
             rv = get_latest_rv(symbol, window)
@@ -278,6 +256,37 @@ class Dashboard(tk.Frame):
         except Exception as e:
             self.rv_value.config(text="Error")
             self.log_message(f"Error updating RV: {str(e)}")
+
+
+    def process_auto_hedger_commands(self):
+        try:
+            command = get_command()
+            if command:
+                action = command[0]
+                if action == 'qualify_contract':
+                    ib.qualifyContracts(command[1])
+                elif action == 'get_positions':
+                    stock_symbol = command[1]
+                    positions = [p for p in ib.positions() if p.contract.symbol == stock_symbol]
+                    command_queue.put(positions)  # Put the result back in the queue
+                elif action == 'get_deltas':
+                    positions = command[1]
+                    deltas = []
+                    for p in positions:
+                        try:
+                            delta = get_delta(p, ib)
+                            deltas.append(delta)
+                        except Exception as e:
+                            print(f"Error getting delta for position {p}: {e}")
+                            deltas.append(0)  # Append 0 if there's an error
+                    command_queue.put(deltas)  # Put the result back in the queue
+                elif action == 'place_order':
+                    stock_contract, order = command[1], command[2]
+                    trade = ib.placeOrder(stock_contract, order)
+                    command_queue.put(trade.orderStatus.status)  # Put the result back in the queue
+        except Exception as e:
+            print(f"Error processing auto hedger command: {e}")
+        self.after(100, self.process_auto_hedger_commands)
 
     def run_auto_hedger(self):
         stock_symbol = self.stock_var.get()
@@ -299,23 +308,29 @@ class Dashboard(tk.Frame):
             self.hedger_status_label.config(text="Auto-Hedger Status: ON", foreground="green")
         else:
             self.hedger_status_label.config(text="Auto-Hedger Status: OFF", foreground="red")
-        self.after(1000, self.update_hedger_status)  # Update every 1 second
+        self.after(1000, self.update_hedger_status)
 
     def update_hedge_log(self):
         hedge_log = get_hedge_log()
+        self.logs_text.config(state='normal')
         if hedge_log:
             self.logs_text.delete(1.0, tk.END)
-            for log in hedge_log:
-                self.logs_text.insert(tk.END, log + "\n")
+            for log_entry in hedge_log:
+                self.logs_text.insert(tk.END, log_entry + '\n')
             self.logs_text.see(tk.END)
-        self.after(1000, self.update_hedge_log)  # Update every 1 second
+        self.logs_text.config(state='disabled')
+        self.after(1000, self.update_hedge_log)
 
     def log_message(self, message):
+        self.logs_text.config(state='normal')
         self.logs_text.insert(tk.END, message + "\n")
-        self.logs_text.see(tk.END)  # Scroll to the bottom
+        self.logs_text.see(tk.END)
+        self.logs_text.config(state='disabled')
 
     def clear_logs(self):
+        self.logs_text.config(state='normal')
         self.logs_text.delete(1.0, tk.END)
+        self.logs_text.config(state='disabled')
 
     def open_email(self):
         webbrowser.open('mailto:fazeenlancer@gmail.com')
@@ -330,7 +345,7 @@ class Dashboard(tk.Frame):
         elif rv_time == '2 hours':
             return 120
         else:
-            return 30  # default to 30 minutes
+            return 30
 
     def update_current_delta(self):
         stock_symbol = self.stock_var.get()
@@ -339,16 +354,17 @@ class Dashboard(tk.Frame):
             return
 
         try:
-            # Fetch current positions for the selected stock
             positions = get_portfolio_positions()
             positions = [p for p in positions if p.contract.symbol == stock_symbol]
-            aggregate_delta = sum([get_delta(p) for p in positions])
+            aggregate_delta = sum([get_delta(p, ib) for p in positions])
 
             self.delta_value.config(text=f"{aggregate_delta:.2f}")
         except Exception as e:
             self.delta_value.config(text="Error")
             self.log_message(f"Error updating current delta: {str(e)}")
 
-        self.after(5000, self.update_current_delta)  # Update every 5 seconds
+        self.after(5000, self.update_current_delta)
+        
     def on_stock_selection(self, event):
         self.update_current_delta()
+

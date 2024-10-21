@@ -1,7 +1,8 @@
 # ib_connection.py
-from ib_insync import IB, Stock, Option
+from ib_insync import IB, Stock, Option, util
 
 ib = IB()
+print(hasattr(ib, 'loop'))  # Should print True
 
 def connect_ib(port=7497):
     try:
@@ -15,7 +16,6 @@ def connect_ib(port=7497):
 
 def define_stock_contract(symbol, exchange='SMART', currency='USD'):
     contract = Stock(symbol, exchange, currency)
-    ib.qualifyContracts(contract)
     return contract
 
 def get_portfolio_positions():
@@ -31,7 +31,7 @@ def fetch_market_data_for_stock(contract):
         print(f"Error fetching market data for {contract.symbol}: {e}")
         return None
 
-def get_delta(position):
+def get_delta(position, ib_instance):
     """
     Calculate delta for both stock and option positions.
     """
@@ -39,22 +39,22 @@ def get_delta(position):
     try:
         if contract.secType == 'STK':
             # Delta is 1 per share for stocks
-            return position.position * 1
+            return float(position.position)
         elif contract.secType == 'OPT':
-            ib.qualifyContracts(contract)
+            ib_instance.qualifyContracts(contract)
             # Request option market data with Greeks
-            ib.reqMarketDataType(4)  # Use delayed-frozen data if real-time data is not available
-            market_data = ib.reqMktData(contract, '', False, False)
-            ib.sleep(2)  # Wait for data to populate
+            ib_instance.reqMarketDataType(4)  # Use delayed-frozen data if real-time data is not available
+            market_data = ib_instance.reqMktData(contract, '', False, False)
+            ib_instance.sleep(2)  # Wait for data to populate
             if market_data.modelGreeks:
                 # Delta for options is per contract; multiply by position size and 100 (shares per contract)
-                delta = position.position * market_data.modelGreeks.delta * 100
-                return delta
+                delta = float(position.position) * market_data.modelGreeks.delta * 100
+                return float(delta)
             else:
                 print(f"No Greeks available for option {contract.localSymbol}")
-                return 0
+                return 0.0
         else:
-            return 0
+            return 0.0
     except Exception as e:
         print(f"Error fetching delta for {contract.symbol}: {e}")
-        return 0
+        return 0.0
