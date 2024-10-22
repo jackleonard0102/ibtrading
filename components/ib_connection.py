@@ -7,7 +7,7 @@ print(hasattr(ib, 'loop'))  # Should print True
 def connect_ib(port=7497):
     try:
         ib.connect('127.0.0.1', port, clientId=1)
-        ib.reqMarketDataType(3)  # Use delayed market data
+        ib.reqMarketDataType(1)  # Use real-time market data when available
         print("Connected to IBKR!")
         return True
     except Exception as e:
@@ -42,8 +42,6 @@ def get_delta(position, ib_instance):
             return float(position.position)
         elif contract.secType == 'OPT':
             ib_instance.qualifyContracts(contract)
-            # Request option market data with Greeks
-            ib_instance.reqMarketDataType(4)  # Use delayed-frozen data if real-time data is not available
             market_data = ib_instance.reqMktData(contract, '', False, False)
             ib_instance.sleep(2)  # Wait for data to populate
             if market_data.modelGreeks:

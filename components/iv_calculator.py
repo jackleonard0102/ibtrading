@@ -1,48 +1,26 @@
+# iv_calculator.py
 from ib_insync import Stock, Option
 from components.ib_connection import ib
 import math
 from scipy.stats import norm
 from datetime import datetime
 
-def calculate_iv(S, K, T, r, market_price, call_put='C'):
-    # Helper functions to compute d1 and d2
-    def d1(S, K, T, r, sigma):
-        return (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
-    
-    def d2(S, K, T, r, sigma):
-        return d1(S, K, T, r, sigma) - sigma * math.sqrt(T)
-    
-    def option_price(S, K, T, r, sigma, call_put='C'):
-        d_1 = d1(S, K, T, r, sigma)
-        d_2 = d2(S, K, T, r, sigma)
-        
-        if call_put == 'C':  # Call option
-            return S * norm.cdf(d_1) - K * math.exp(-r * T) * norm.cdf(d_2)
-        elif call_put == 'P':  # Put option
-            return K * math.exp(-r * T) * norm.cdf(-d_2) - S * norm.cdf(-d_1)
-
-    # Initial guess for volatility
-    sigma = 0.25
-    tolerance = 0.0001
-    max_iterations = 100
-
-    for _ in range(max_iterations):
-        option_price_est = option_price(S, K, T, r, sigma, call_put)
-        vega = S * norm.pdf(d1(S, K, T, r, sigma)) * math.sqrt(T)
-
-        # Update sigma using Newton-Raphson method
-        sigma_diff = (option_price_est - market_price) / vega
-        sigma = sigma - sigma_diff
-
-        if abs(sigma_diff) < tolerance:
-            return sigma
-
-    return sigma
+def get_stock_list():
+    """
+    Retrieve a list of stock symbols from the current portfolio.
+    """
+    try:
+        positions = ib.positions()
+        stock_symbols = list(set([p.contract.symbol for p in positions if p.contract.secType == 'STK']))
+        return sorted(stock_symbols)
+    except Exception as e:
+        print(f"Error in get_stock_list: {e}")
+        return []
 
 def get_nearest_option(stock, stock_price):
     """
     Retrieve the nearest option for the given stock symbol dynamically.
-    We find the expiration date and strike closest to the current stock price.
+    Finds the expiration date and strike closest to the current stock price.
     """
     # Request all option chains for the stock
     chains = ib.reqSecDefOptParams(stock.symbol, '', stock.secType, stock.conId)
@@ -62,67 +40,63 @@ def get_nearest_option(stock, stock_price):
         symbol=stock.symbol,
         lastTradeDateOrContractMonth=expiration,
         strike=nearest_strike,
-        right="C",  # 'C' for Call
+        right="C",  # 'C' for Call option
         exchange="SMART"
     )
     ib.qualifyContracts(option_contract)
     return option_contract
 
+def calculate_iv(S, K, T, r, market_price, call_put='C'):
+    def d1(S, K, T, r, sigma):
+        return (math.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
+    
+    def d2(S, K, T, r, sigma):
+        return d1(S, K, T, r, sigma) - sigma * math.sqrt(T)
+    
+    def option_price(S, K, T, r, sigma, call_put='C'):
+        d_1 = d1(S, K, T, r, sigma)
+        d_2 = d2(S, K, T, r, sigma)
+        
+        if call_put == 'C':
+            return S * norm.cdf(d_1) - K * math.exp(-r * T) * norm.cdf(d_2)
+        else:
+            return K * math.exp(-r * T) * norm.cdf(-d_2) - S * norm.cdf(-d_1)
+
+    sigma = 0.25
+    tolerance = 0.0001
+    max_iterations = 100
+
+    for _ in range(max_iterations):
+        option_price_est = option_price(S, K, T, r, sigma, call_put)
+        vega = S * norm.pdf(d1(S, K, T, r, sigma)) * math.sqrt(T)
+        sigma_diff = (option_price_est - market_price) / vega
+        sigma -= sigma_diff
+
+        if abs(sigma_diff) < tolerance:
+            return sigma
+
+    return sigma
+
 def get_iv(symbol):
-    """
-    Calculate the Implied Volatility (IV) for the given stock symbol using available option data and the Black-Scholes model.
-    """
     try:
-        # Define the stock and qualify its contract
         stock = Stock(symbol, 'SMART', 'USD')
         ib.qualifyContracts(stock)
-
-        # Request market data for the stock
         stock_data = ib.reqMktData(stock, '', False, False)
         ib.sleep(2)
 
-        if stock_data.last is None and (stock_data.bid is None or stock_data.ask is None):
-            raise ValueError(f"Could not retrieve market data for {symbol}.")
-
         stock_price = stock_data.last or (stock_data.bid + stock_data.ask) / 2
-
-        # Fetch nearest option dynamically
         option_contract = get_nearest_option(stock, stock_price)
-
-        # Fetch option data
         option_data = ib.reqMktData(option_contract, '', False, False)
         ib.sleep(2)
 
-        if option_data.last is None and (option_data.bid is None or option_data.ask is None):
-            raise ValueError(f"Could not retrieve option price for {symbol}.")
-
-        # Parameters for Black-Scholes model
         K = option_contract.strike
-        # Calculate time to expiration
         expiration_date = datetime.strptime(option_contract.lastTradeDateOrContractMonth, '%Y%m%d')
-        today = datetime.now()
-        T = (expiration_date - today).days / 365.0  # Time to expiration in years
-        if T <= 0:
-            raise ValueError("Option has already expired.")
-
-        r = 0.01  # Assumed risk-free rate (1%)
+        T = (expiration_date - datetime.now()).days / 365.0
+        r = 0.01
         market_price = option_data.last or (option_data.bid + option_data.ask) / 2
 
-        if market_price <= 0:
-            raise ValueError("Invalid option market price.")
-
-        # Calculate IV using Black-Scholes
         iv = calculate_iv(stock_price, K, T, r, market_price, call_put='C')
         return iv
     except Exception as e:
         print(f"Error fetching IV for {symbol}: {str(e)}")
         return None
-
-def get_stock_list():
-    try:
-        positions = ib.positions()
-        stock_symbols = list(set([p.contract.symbol for p in positions if p.contract.secType == 'STK']))
-        return sorted(stock_symbols)
-    except Exception as e:
-        print(f"Error in get_stock_list: {e}")
-        return []
