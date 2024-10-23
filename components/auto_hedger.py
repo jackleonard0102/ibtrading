@@ -1,8 +1,10 @@
-from ib_insync import Stock, MarketOrder, LimitOrder
-from components.ib_connection import ib, define_stock_contract, fetch_market_data_for_stock, get_delta
-import asyncio
-import logging
+# auto_hedger.py
 import threading
+import queue
+from ib_insync import Stock, MarketOrder
+from components.ib_connection import define_stock_contract, get_delta
+import time
+import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -10,75 +12,105 @@ logger = logging.getLogger(__name__)
 is_running = False
 hedge_log = []
 hedge_thread = None
+command_queue = queue.Queue()
 
-async def monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_qty):
-    global is_running, hedge_log
+def start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty):
+    global hedge_log, is_running, hedge_thread
+    print(f"**** Auto-Hedger started for {stock_symbol} ****")
+    hedge_log = []
     is_running = True
 
-    stock_contract = define_stock_contract(stock_symbol)
+    def monitor_and_hedge():
+        global is_running
+        stock_contract = define_stock_contract(stock_symbol)
+        command_queue.put(('qualify_contract', stock_contract))
 
-    try:
-        await ib.qualifyContractsAsync(stock_contract)
-        hedge_log.append(f"Qualified contract for {stock_symbol}")
-    except Exception as e:
-        hedge_log.append(f"Failed to qualify contract for {stock_symbol}: {e}")
-        return
+        while is_running:
+            try:
+                command_queue.put(('get_positions', stock_symbol))
+                time.sleep(0.1)  # Wait for the main thread to process the command
+                positions = command_queue.get()
+                if not isinstance(positions, list):
+                    print(f"Unexpected response for get_positions: {positions}")
+                    continue
+                
+                command_queue.put(('get_deltas', positions))
+                time.sleep(0.1)  # Wait for the main thread to process the command
+                deltas = command_queue.get()
+                if not isinstance(deltas, list):
+                    print(f"Unexpected response for get_deltas: {deltas}")
+                    continue
+                
+                # Ensure all deltas are float values
+                try:
+                    deltas = [float(delta) for delta in deltas]
+                except ValueError as e:
+                    print(f"Error converting deltas to float: {e}")
+                    continue
 
-    while is_running:
-        try:
-            positions = await ib.reqPositionsAsync()
-            # Only sum the delta for the relevant symbol
-            aggregate_delta = sum([get_delta(p.contract) for p in positions if p.contract.symbol == stock_symbol])
+                aggregate_delta = sum(deltas)
 
-            delta_diff = target_delta - aggregate_delta
-            hedge_log.append(f"Delta difference for {stock_symbol}: {delta_diff}")
+                message = f"Current positions for {stock_symbol}: {positions}"
+                hedge_log.append(message)
+                print(message)
+                message = f"Aggregate delta for {stock_symbol}: {aggregate_delta:.2f}"
+                hedge_log.append(message)
+                print(message)
 
-            if abs(delta_diff) > delta_change:
-                hedge_qty = min(abs(delta_diff), max_order_qty)
-                market_data = await fetch_market_data_for_stock(stock_contract)
+                delta_diff = float(target_delta) - aggregate_delta
+                message = f"Delta difference for {stock_symbol}: {delta_diff:.2f}"
+                hedge_log.append(message)
+                print(message)
 
-                if market_data:
-                    order = MarketOrder('BUY' if delta_diff > 0 else 'SELL', hedge_qty)
-                    trade = ib.placeOrder(stock_contract, order)
-                    hedge_log.append(f"Placed order: {trade}")
+                if abs(delta_diff) > float(delta_change):
+                    hedge_qty = min(abs(delta_diff), float(max_order_qty))
+                    hedge_qty = int(hedge_qty)
+
+                    order_action = 'BUY' if delta_diff > 0 else 'SELL'
+                    order = MarketOrder(order_action, hedge_qty)
+                    command_queue.put(('place_order', stock_contract, order))
+                    time.sleep(0.1)  # Wait for the main thread to process the command
+                    trade_status = command_queue.get()
+
+                    message = f"Placed order: {order_action} {hedge_qty} shares of {stock_symbol}"
+                    hedge_log.append(message)
+                    print(message)
+                    message = f"Order status: {trade_status}"
+                    hedge_log.append(message)
+                    print(message)
+
+                    if trade_status == 'Rejected':
+                        message = f"Order rejected: {trade_status}"
+                        hedge_log.append(message)
+                        print(message)
                 else:
-                    hedge_log.append(f"Unable to fetch market data for {stock_symbol}. Skipping hedging.")
-            else:
-                hedge_log.append(f"No hedging needed. Delta difference {delta_diff} is below threshold {delta_change}.")
+                    message = f"No hedging needed. Delta difference {delta_diff:.2f} is below threshold {delta_change}."
+                    hedge_log.append(message)
+                    print(message)
 
-        except Exception as e:
-            hedge_log.append(f"Error during hedging for {stock_symbol}: {e}")
+            except Exception as e:
+                message = f"Error during hedging for {stock_symbol}: {e}"
+                hedge_log.append(message)
+                print(message)
 
-        await asyncio.sleep(60)
+            time.sleep(60)  # Wait before the next iteration
 
-    hedge_log.append("Auto-Hedger has been stopped.")
+        message = "Auto-Hedger has been stopped."
+        hedge_log.append(message)
+        print(message)
+
+    hedge_thread = threading.Thread(target=monitor_and_hedge)
+    hedge_thread.start()
 
 def stop_auto_hedger():
     global is_running, hedge_thread
-    is_running = False  # Signal to stop the hedging loop
+    is_running = False
     print("**** Auto-Hedger stop signal received ****")
     logger.info("Auto-Hedger stop signal received.")
-
     if hedge_thread and hedge_thread.is_alive():
-        hedge_thread.join(timeout=65)  # Wait for the thread to finish
-        if hedge_thread.is_alive():
-            logger.warning("Auto-Hedger thread did not stop in time. Forcing termination.")
-        else:
-            logger.info("Auto-Hedger has stopped successfully.")
-    else:
-        logger.info("Auto-Hedger is not running.")
-
-def start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty):
-    print("**** Auto-Hedger started for {stock_symbol} ****")
-    global hedge_log, hedge_thread, is_running
-    hedge_log = []
-    is_running = True
-    
-    def run_hedger():
-        asyncio.run(monitor_and_hedge(stock_symbol, target_delta, delta_change, max_order_qty))
-    
-    hedge_thread = threading.Thread(target=run_hedger)
-    hedge_thread.start()
+        hedge_thread.join()
+        hedge_thread = None
+        logger.info("Auto-Hedger has stopped successfully.")
 
 def get_hedge_log():
     global hedge_log
@@ -86,4 +118,7 @@ def get_hedge_log():
 
 def is_hedger_running():
     global is_running, hedge_thread
-    return is_running and hedge_thread and hedge_thread.is_alive()
+    return is_running and hedge_thread is not None and hedge_thread.is_alive()
+
+def get_command():
+    return command_queue.get() if not command_queue.empty() else None

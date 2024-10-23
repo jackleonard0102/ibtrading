@@ -5,7 +5,7 @@ from components.ib_connection import ib
 
 def calculate_realized_volatility(price_data, window):
     """
-    Calculate Realized Volatility (RV) based on historical price data.
+    Calculate the Realized Volatility (RV) based on historical price data.
     """
     if len(price_data) < window + 1:
         raise ValueError("Not enough historical price data for RV calculation.")
@@ -13,30 +13,30 @@ def calculate_realized_volatility(price_data, window):
     prices = pd.Series(price_data)
     log_returns = np.log(prices / prices.shift(1))
     
-    # Calculate rolling standard deviation
     rolling_std = log_returns.rolling(window=window).std()
-    
-    # Annualize the volatility (assuming daily data)
-    rv_values = rolling_std * np.sqrt(252)
-    
+    rv_values = rolling_std * np.sqrt(252)  # Annualize the volatility
+
     return rv_values.dropna().tolist()
 
 def get_latest_rv(symbol, window):
     """
-    Get the latest realized volatility value.
+    Get the latest Realized Volatility value for the given stock.
     """
-    stock = Stock(symbol, 'SMART', 'USD')
-    ib.qualifyContracts(stock)
-    
-    bars = ib.reqHistoricalData(
-        stock,
-        endDateTime='',
-        durationStr='1 Y',
-        barSizeSetting='1 day',
-        whatToShow='TRADES',
-        useRTH=True
-    )
-    
-    price_data = [bar.close for bar in bars]
-    rv_values = calculate_realized_volatility(price_data, window)
-    return rv_values[-1] if rv_values else None
+    try:
+        stock = Stock(symbol, 'SMART', 'USD')
+        ib.qualifyContracts(stock)
+
+        bars = ib.reqHistoricalData(
+            stock,
+            endDateTime='',
+            durationStr='1 Y',
+            barSizeSetting='1 day',
+            whatToShow='TRADES',
+            useRTH=True
+        )
+        price_data = [bar.close for bar in bars]
+        rv_values = calculate_realized_volatility(price_data, window)
+        return rv_values[-1] if rv_values else None
+    except Exception as e:
+        print(f"Error fetching RV for {symbol}: {str(e)}")
+        return None
