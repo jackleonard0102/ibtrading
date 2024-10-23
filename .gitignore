@@ -13,6 +13,7 @@ venv.bak/
 dist/  
 build/  
 .venv
+.venv_311
 
 # IDE and editor specific files  
 .vscode/  

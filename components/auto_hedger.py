@@ -28,42 +28,61 @@ def start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty):
         while is_running:
             try:
                 command_queue.put(('get_positions', stock_symbol))
-                time.sleep(0.1)  # Allow processing
+                time.sleep(0.1)  # Wait for the main thread to process the command
                 positions = command_queue.get()
-
                 if not isinstance(positions, list):
                     print(f"Unexpected response for get_positions: {positions}")
                     continue
                 
                 command_queue.put(('get_deltas', positions))
-                time.sleep(0.1)  # Allow processing
+                time.sleep(0.1)  # Wait for the main thread to process the command
                 deltas = command_queue.get()
-                
                 if not isinstance(deltas, list):
                     print(f"Unexpected response for get_deltas: {deltas}")
                     continue
+                
+                # Ensure all deltas are float values
+                try:
+                    deltas = [float(delta) for delta in deltas]
+                except ValueError as e:
+                    print(f"Error converting deltas to float: {e}")
+                    continue
 
-                deltas = [float(delta) for delta in deltas]
                 aggregate_delta = sum(deltas)
 
+                message = f"Current positions for {stock_symbol}: {positions}"
+                hedge_log.append(message)
+                print(message)
                 message = f"Aggregate delta for {stock_symbol}: {aggregate_delta:.2f}"
                 hedge_log.append(message)
                 print(message)
 
                 delta_diff = float(target_delta) - aggregate_delta
+                message = f"Delta difference for {stock_symbol}: {delta_diff:.2f}"
+                hedge_log.append(message)
+                print(message)
 
                 if abs(delta_diff) > float(delta_change):
                     hedge_qty = min(abs(delta_diff), float(max_order_qty))
                     hedge_qty = int(hedge_qty)
+
                     order_action = 'BUY' if delta_diff > 0 else 'SELL'
                     order = MarketOrder(order_action, hedge_qty)
                     command_queue.put(('place_order', stock_contract, order))
-                    time.sleep(0.1)
+                    time.sleep(0.1)  # Wait for the main thread to process the command
                     trade_status = command_queue.get()
 
-                    message = f"Placed order: {order_action} {hedge_qty} shares of {stock_symbol}, Status: {trade_status}"
+                    message = f"Placed order: {order_action} {hedge_qty} shares of {stock_symbol}"
                     hedge_log.append(message)
                     print(message)
+                    message = f"Order status: {trade_status}"
+                    hedge_log.append(message)
+                    print(message)
+
+                    if trade_status == 'Rejected':
+                        message = f"Order rejected: {trade_status}"
+                        hedge_log.append(message)
+                        print(message)
                 else:
                     message = f"No hedging needed. Delta difference {delta_diff:.2f} is below threshold {delta_change}."
                     hedge_log.append(message)
@@ -74,10 +93,11 @@ def start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty):
                 hedge_log.append(message)
                 print(message)
 
-            time.sleep(60)  # Wait before next iteration
+            time.sleep(60)  # Wait before the next iteration
 
-        hedge_log.append("Auto-Hedger has been stopped.")
-        print("Auto-Hedger has been stopped.")
+        message = "Auto-Hedger has been stopped."
+        hedge_log.append(message)
+        print(message)
 
     hedge_thread = threading.Thread(target=monitor_and_hedge)
     hedge_thread.start()
