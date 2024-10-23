@@ -155,12 +155,19 @@ class Dashboard(tk.Frame):
         self.contact_frame = ttk.LabelFrame(self, text="Contact Info", width=400)
         self.contact_frame.grid(row=2, column=1, padx=10, pady=10, sticky="nsew")
 
-        # Contact Information
-        self.contact_label = ttk.Label(self.contact_frame, text="It's not safe to share detailed information in freelancer, even calling is disabled.")
-        self.contact_label.grid(row=0, column=0, padx=10, pady=10)
-        self.email_label = ttk.Label(self.contact_frame, text="fazeenlancer@gmail.com", foreground="blue", cursor="hand2")
-        self.email_label.grid(row=1, column=0, padx=10, pady=5)
-        self.email_label.bind("<Button-1>", lambda e: self.open_email())
+        # Contact Information  
+        self.contact_label = ttk.Label(self.contact_frame, text="I would like to keep google chat with you. I've already sent a message to aboris1313@yahoo.com. Below is contact info:")  
+        self.contact_label.grid(row=0, column=0, padx=10, pady=10)  
+        self.email_label = ttk.Label(self.contact_frame, text="fazeenlancer@gmail.com", foreground="blue", cursor="hand2")  
+        self.email_label.grid(row=1, column=0, padx=10, pady=5)  
+        self.email_label.bind("<Button-1>", lambda e: self.open_email())  
+
+        self.additional_label = ttk.Label(self.contact_frame, text="Also, we can chat via Telegram or whatever you prefer. You can send your account via direct chat to my mail account.")  
+        self.additional_label.grid(row=2, column=0, padx=10, pady=10)
+        self.additional_label = ttk.Label(self.contact_frame, text="And as you know, do not mention about outside communication in freelancer, due to its policy.")  
+        self.additional_label.grid(row=3, column=0, padx=10, pady=10)
+        self.additional_label = ttk.Label(self.contact_frame, text="Thanks.")  
+        self.additional_label.grid(row=4, column=0, padx=10, pady=10)
 
     def load_stocks(self):
         self.log_message("Loading stocks...")
