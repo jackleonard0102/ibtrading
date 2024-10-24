@@ -12,8 +12,13 @@ venv.bak/
 *.egg-info/  
 dist/  
 build/  
+<<<<<<< Updated upstream
 .venv
 .venv_311
+=======
+.venv/
+.venv_311/
+>>>>>>> Stashed changes
 
 # IDE and editor specific files  
 .vscode/  
