@@ -3,20 +3,13 @@ from scipy.stats import norm
 from datetime import datetime
 from ib_insync import Stock, Option
 from components.ib_connection import ib
+import nest_asyncio
 import threading
 
+nest_asyncio.apply()
+
 def black_scholes(S, K, T, r, sigma, option_type="C"):
-    """Calculate option price using Black-Scholes model
-    
-    Parameters:
-    S: Current stock price
-    K: Strike price
-    T: Time to maturity (in years)
-    r: Risk-free interest rate
-    sigma: Volatility
-    option_type: "C" for Call, "P" for Put
-    """
-    
+    """Calculate option price using Black-Scholes model"""
     try:
         # Calculate d1 and d2
         d1 = (np.log(S/K) + (r + sigma**2/2)*T) / (sigma*np.sqrt(T))
@@ -34,7 +27,6 @@ def black_scholes(S, K, T, r, sigma, option_type="C"):
 
 def newton_implied_vol(target_price, S, K, T, r, option_type="C", max_iter=100, precision=1e-5):
     """Calculate implied volatility using Newton-Raphson method"""
-    
     try:
         # Initial guess for volatility
         sigma = 0.3
@@ -54,6 +46,8 @@ def newton_implied_vol(target_price, S, K, T, r, option_type="C", max_iter=100, 
                 return sigma
             
             # Update volatility estimate
+            if vega == 0:
+                return None
             sigma = sigma + diff/vega
             
             # Ensure volatility stays within reasonable bounds
@@ -62,44 +56,57 @@ def newton_implied_vol(target_price, S, K, T, r, option_type="C", max_iter=100, 
         
         return None
     except Exception as e:
-        print(f"Error in Newton-Raphson calculation: {str(e)}")
+        print(f"Error in implied volatility calculation: {str(e)}")
         return None
 
-def get_option_market_data(option_contract):
+def get_stock_price(symbol):
+    """Get current stock price"""
+    try:
+        stock = Stock(symbol, 'SMART', 'USD')
+        ib.qualifyContracts(stock)
+        
+        ticker = ib.reqMktData(stock)
+        ib.sleep(1)  # Wait for market data
+        
+        price = ticker.last or ticker.close
+        ib.cancelMktData(ticker)
+        
+        return price if price else None
+    except Exception as e:
+        print(f"Error getting stock price: {str(e)}")
+        return None
+
+def get_option_data(option_contract):
     """Get market data for an option contract"""
     try:
         ticker = ib.reqMktData(option_contract)
         ib.sleep(2)  # Wait for market data
         
         if ticker.last or ticker.close:
-            return ticker.last or ticker.close
+            price = ticker.last or ticker.close
+        elif ticker.bid and ticker.ask:
+            price = (ticker.bid + ticker.ask) / 2
+        else:
+            price = None
             
-        # If no last or close price, try mid price
-        if ticker.bid and ticker.ask:
-            return (ticker.bid + ticker.ask) / 2
-            
+        ib.cancelMktData(ticker)
+        return price
+    except Exception as e:
+        print(f"Error getting option data: {str(e)}")
         return None
-    finally:
-        ib.cancelMktData(option_contract)
-
+    
 def calculate_iv(symbol):
     """Calculate implied volatility using Black-Scholes model"""
     try:
-        # Create stock contract and get current price
-        stock = Stock(symbol, 'SMART', 'USD')
-        ib.qualifyContracts(stock)
-        
-        stock_ticker = ib.reqMktData(stock)
-        ib.sleep(1)
-        
-        S = stock_ticker.last or stock_ticker.close
-        if not S:
+        # Get current stock price
+        S = get_stock_price(symbol)
+        if S is None:
             print(f"Could not get current price for {symbol}")
             return None
             
-        ib.cancelMktData(stock)
-        
         # Get option chain
+        stock = Stock(symbol, 'SMART', 'USD')
+        ib.qualifyContracts(stock)
         chains = ib.reqSecDefOptParams(stock.symbol, '', stock.secType, stock.conId)
         chain = next(c for c in chains if c.exchange == 'SMART')
         
@@ -127,8 +134,8 @@ def calculate_iv(symbol):
         ib.qualifyContracts(call, put)
         
         # Get option prices
-        call_price = get_option_market_data(call)
-        put_price = get_option_market_data(put)
+        call_price = get_option_data(call)
+        put_price = get_option_data(put)
         
         if not (call_price or put_price):
             print(f"Could not get option prices for {symbol}")
@@ -154,7 +161,7 @@ def calculate_iv(symbol):
         return call_iv if call_iv is not None else put_iv
         
     except Exception as e:
-        print(f"Error calculating IV for {symbol}: {str(e)}")
+        print(f"Error calculating IV: {str(e)}")
         return None
 
 def get_iv(symbol):
@@ -169,9 +176,9 @@ def get_iv(symbol):
         thread = threading.Thread(target=run_calculation)
         thread.daemon = True
         thread.start()
-        thread.join(timeout=10)  # Wait up to 10 seconds for the calculation
+        thread.join(timeout=10)  # Wait up to 10 seconds
         
         return result[0]
     except Exception as e:
-        print(f"Error calculating IV for {symbol}: {str(e)}")
+        print(f"Error getting IV: {str(e)}")
         return None

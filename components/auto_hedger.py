@@ -9,17 +9,28 @@ from components.ib_connection import (
     get_delta,
 )
 from ib_insync import MarketOrder
+import nest_asyncio
+nest_asyncio.apply()
 
 # Dictionary to track hedger status for each product
 hedger_status = {}
 hedge_log = deque(maxlen=100)  # Keep last 100 log entries
 command_queue = queue.Queue()
+main_event_loop = None
 
 def log_message(message):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     formatted_message = f"{timestamp} - {message}"
     hedge_log.append(formatted_message)
     print(formatted_message)
+
+def get_or_create_event_loop():
+    try:
+        return asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
 
 def execute_trade(stock_contract, order_qty, order_type='MKT'):
     """Execute a trade with the given parameters"""
@@ -36,8 +47,9 @@ def execute_trade(stock_contract, order_qty, order_type='MKT'):
             log_message(f"Failed to place order for {stock_contract.symbol}")
             return False
 
+        # Wait for the trade to complete
         while not trade.isDone():
-            ib.sleep(0.1)  # Use ib.sleep instead of asyncio.sleep
+            ib.sleep(0.1)
             
         if trade.orderStatus.status == 'Filled':
             log_message(f"Order filled: {order_type} {order.action} {abs(order_qty)} {stock_contract.symbol} at {trade.orderStatus.avgFillPrice}")
@@ -64,6 +76,8 @@ def calculate_aggregate_delta(positions):
     try:
         total_delta = 0
         for position in positions:
+            if not position:
+                continue
             delta = get_delta(position, ib)
             if delta is not None:
                 total_delta += delta
@@ -84,6 +98,10 @@ def hedge_position(stock_symbol, target_delta, delta_change_threshold, max_order
             return
 
         positions = get_current_positions(stock_symbol)
+        if not positions:
+            log_message(f"No positions found for {stock_symbol}")
+            return
+            
         current_delta = calculate_aggregate_delta(positions)
         
         log_message(f"Current aggregate delta for {stock_symbol}: {current_delta:.2f}")
@@ -113,11 +131,21 @@ def hedge_position(stock_symbol, target_delta, delta_change_threshold, max_order
 
 def run_auto_hedger(stock_symbol, target_delta, delta_change_threshold, max_order_qty):
     """Function for auto hedging"""
+    global main_event_loop
     try:
+        # Ensure we have an event loop
+        loop = get_or_create_event_loop()
+        if main_event_loop is None:
+            main_event_loop = loop
+
         log_message(f"**** Auto-Hedger started for {stock_symbol} ****")
         while hedger_status.get(stock_symbol, False):
-            hedge_position(stock_symbol, target_delta, delta_change_threshold, max_order_qty)
-            ib.sleep(5)  # Use ib.sleep instead of asyncio.sleep
+            try:
+                hedge_position(stock_symbol, target_delta, delta_change_threshold, max_order_qty)
+                ib.sleep(5)  # Wait before next check
+            except Exception as e:
+                log_message(f"Error in hedging cycle: {str(e)}")
+                ib.sleep(5)  # Wait before retrying
             
     except Exception as e:
         log_message(f"Error in auto_hedger_thread: {str(e)}")
@@ -141,9 +169,9 @@ def start_auto_hedger(stock_symbol, target_delta, delta_change_threshold, max_or
         # Start the auto hedger in a new thread
         thread = threading.Thread(
             target=run_auto_hedger,
-            args=(stock_symbol, target_delta, delta_change_threshold, max_order_qty)
+            args=(stock_symbol, target_delta, delta_change_threshold, max_order_qty),
+            daemon=True
         )
-        thread.daemon = True
         thread.start()
         
         log_message(f"Auto-Hedger started for {stock_symbol}")

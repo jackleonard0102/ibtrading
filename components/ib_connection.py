@@ -33,7 +33,7 @@ async def connect_ib(port=7497, retry_count=3, retry_delay=2):
                 
     logger.error("Failed to connect to IBKR after all attempts")
     return False
-
+    
 def get_portfolio_positions():
     """
     Get current portfolio positions
@@ -121,3 +121,4 @@ async def disconnect_ib():
     except Exception as e:
         logger.error(f"Error disconnecting from IBKR: {e}")
         return False
+
