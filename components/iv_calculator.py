@@ -85,6 +85,9 @@ def get_iv(symbol):
         ib.sleep(2)
 
         stock_price = stock_data.last or (stock_data.bid + stock_data.ask) / 2
+        if stock_price is None or stock_price <= 0:
+            raise ValueError(f"Invalid stock price for {symbol}: {stock_price}")
+
         option_contract = get_nearest_option(stock, stock_price)
         option_data = ib.reqMktData(option_contract, '', False, False)
         ib.sleep(2)
@@ -94,6 +97,8 @@ def get_iv(symbol):
         T = (expiration_date - datetime.now()).days / 365.0
         r = 0.01
         market_price = option_data.last or (option_data.bid + option_data.ask) / 2
+        if market_price is None or market_price <= 0:
+            raise ValueError(f"Invalid option market price for {symbol}")
 
         iv = calculate_iv(stock_price, K, T, r, market_price, call_put='C')
         return iv

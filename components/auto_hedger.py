@@ -13,12 +13,19 @@ is_running = False
 hedge_log = []
 hedge_thread = None
 command_queue = queue.Queue()
+hedge_configs = {}
 
-def start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty):
+def start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty, selected_positions):
     global hedge_log, is_running, hedge_thread
     print(f"**** Auto-Hedger started for {stock_symbol} ****")
     hedge_log = []
     is_running = True
+    hedge_configs[stock_symbol] = {
+        "target_delta": target_delta,
+        "delta_change": delta_change,
+        "max_order_qty": max_order_qty,
+        "selected_positions": selected_positions
+    }
 
     def monitor_and_hedge():
         global is_running
