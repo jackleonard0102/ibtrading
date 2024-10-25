@@ -1,7 +1,6 @@
 import asyncio
 import tkinter as tk
 from tkinter import ttk
-import webbrowser
 from datetime import datetime
 from components.ib_connection import (
     get_portfolio_positions,
@@ -13,14 +12,10 @@ from components.ib_connection import (
 from components.auto_hedger import (
     start_auto_hedger,
     stop_auto_hedger,
-    get_hedge_log,
-    is_hedger_running,
-    get_command,
-    command_queue
+    is_hedger_running
 )
-from components.iv_calculator import get_iv, get_stock_list
+from components.iv_calculator import get_iv
 from components.rv_calculator import get_latest_rv
-from ib_insync import Stock, Option
 
 class Dashboard(tk.Frame):
     def __init__(self, parent, loop):
@@ -34,47 +29,39 @@ class Dashboard(tk.Frame):
         self.update_current_delta()
         self.schedule_update_portfolio()
         self.update_hedger_status()
-        self.update_hedge_log()
-        self.process_auto_hedger_commands()
-        # Start initial portfolio update
-        asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(), self.loop)
 
     def create_widgets(self):
-        self.master.geometry("1645x940")
+        self.master.geometry("1180x930")  # Reduced height since we removed Activity Logs
         
         # Configure grid layout for master (main window) to expand as needed
         self.master.grid_rowconfigure(0, weight=1)
-        self.master.grid_rowconfigure(1, weight=3)  # Allocate more weight for the portfolio section
+        self.master.grid_rowconfigure(1, weight=3)
         self.master.grid_columnconfigure(0, weight=1)
         
         # Create portfolio frame with status indicators
         self.portfolio_frame = ttk.LabelFrame(self, text="Portfolio")
         self.portfolio_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         
-        # Configure grid layout within portfolio_frame to allow resizing
-        self.portfolio_frame.grid_rowconfigure(0, weight=0)  # Status row doesn't need to expand
-        self.portfolio_frame.grid_rowconfigure(1, weight=1)  # Treeview row should expand
+        # Configure grid layout within portfolio_frame
+        self.portfolio_frame.grid_rowconfigure(0, weight=0)
+        self.portfolio_frame.grid_rowconfigure(1, weight=1)
         self.portfolio_frame.grid_columnconfigure(0, weight=1)
 
         # Add status indicators for portfolio
         self.portfolio_status_frame = ttk.Frame(self.portfolio_frame)
         self.portfolio_status_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=2)
-
+        
         self.connection_status = ttk.Label(self.portfolio_status_frame, text="Connection Status: Checking...", foreground="orange")
         self.connection_status.pack(side=tk.LEFT, padx=5)
-
+        
         self.update_status = ttk.Label(self.portfolio_status_frame, text="Last Update: Never", foreground="gray")
         self.update_status.pack(side=tk.LEFT, padx=5)
-
-        self.refresh_button = ttk.Button(self.portfolio_status_frame, text="Refresh", 
-                                        command=lambda: asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(), self.loop))
-        self.refresh_button.pack(side=tk.RIGHT, padx=5)
-
-        # Create a Treeview for displaying portfolio details
+        
         self.portfolio_tree = ttk.Treeview(
             self.portfolio_frame,
             columns=('Symbol', 'Type', 'Position', 'Delta', 'Avg Cost', 'Market Price', 'Unrealized PNL'),
-            show='headings'
+            show='headings',
+            height=20
         )
         self.portfolio_tree.heading('Symbol', text='Symbol')
         self.portfolio_tree.heading('Type', text='Type')
@@ -85,7 +72,6 @@ class Dashboard(tk.Frame):
         self.portfolio_tree.heading('Unrealized PNL', text='Unrealized PNL')
         self.portfolio_tree.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
 
-        # Configure column widths (optional, adjust if necessary)
         self.portfolio_tree.column('Symbol', width=150)
         self.portfolio_tree.column('Type', width=100)
         self.portfolio_tree.column('Position', width=100)
@@ -94,11 +80,14 @@ class Dashboard(tk.Frame):
         self.portfolio_tree.column('Market Price', width=100)
         self.portfolio_tree.column('Unrealized PNL', width=150)
 
-        # Create the Auto Hedger frame
+        # Add refresh button for portfolio
+        self.refresh_button = ttk.Button(self.portfolio_status_frame, text="Refresh", 
+                                       command=lambda: asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(), self.loop))
+        self.refresh_button.pack(side=tk.RIGHT, padx=5)
+
+        # Auto Hedger Frame
         self.hedger_frame = ttk.LabelFrame(self, text="Auto Hedger")
         self.hedger_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-        self.hedger_frame.grid_rowconfigure(8, weight=1)
-        self.hedger_frame.grid_columnconfigure(1, weight=1)
 
         self.stock_label = ttk.Label(self.hedger_frame, text="Select Stock Symbol:")
         self.stock_label.grid(row=0, column=0, padx=10, pady=10)
@@ -106,20 +95,12 @@ class Dashboard(tk.Frame):
         self.stock_dropdown = ttk.Combobox(self.hedger_frame, textvariable=self.stock_var)
         self.stock_dropdown.grid(row=0, column=1, padx=10, pady=10)
         self.stock_dropdown.bind("<<ComboboxSelected>>", self.on_stock_selection)
-        self.position_listbox = tk.Listbox(self.hedger_frame, selectmode=tk.MULTIPLE)
-        self.position_listbox.grid(row=8, column=0, columnspan=2, padx=10, pady=10)
 
         self.delta_label = ttk.Label(self.hedger_frame, text="Current Delta:")
         self.delta_label.grid(row=1, column=0, padx=10, pady=10)
         self.delta_value = ttk.Label(self.hedger_frame, text="Loading...")
         self.delta_value.grid(row=1, column=1, padx=10, pady=10)
 
-        # Add refresh button for portfolio
-        self.refresh_button = ttk.Button(self.portfolio_status_frame, text="Refresh", 
-                                       command=lambda: asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(), self.loop))
-        self.refresh_button.pack(side=tk.RIGHT, padx=5)
-
-        # Rest of the widgets
         self.target_delta_label = ttk.Label(self.hedger_frame, text="Target Delta:")
         self.target_delta_label.grid(row=2, column=0, padx=10, pady=10)
         self.target_delta_entry = ttk.Entry(self.hedger_frame)
@@ -147,30 +128,42 @@ class Dashboard(tk.Frame):
         self.hedger_status_label = ttk.Label(self.hedger_frame, text="Auto-Hedger Status: OFF", foreground="red")
         self.hedger_status_label.grid(row=7, column=0, columnspan=2, padx=10, pady=10)
 
-        # Set up the logs frame
-        self.logs_frame = ttk.LabelFrame(self, text="Activity Logs")
-        self.logs_frame.grid(row=2, column=0, padx=10, pady=10, sticky="nsew")
+        # IV/RV Calculator Frame
+        self.ivrv_frame = ttk.LabelFrame(self, text="IV / RV Calculator")
+        self.ivrv_frame.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
+
+        self.symbol_var = tk.StringVar()
+        self.symbol_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.symbol_var)
+        self.symbol_dropdown.grid(row=0, column=1, padx=10, pady=10)
         
-        self.logs_text = tk.Text(self.logs_frame, height=10, width=50)
-        self.logs_text.pack(padx=5, pady=5, fill=tk.BOTH, expand=True)
-        
-        # Add a scrollbar
-        self.logs_scrollbar = ttk.Scrollbar(self.logs_frame, command=self.logs_text.yview)
-        self.logs_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.logs_text['yscrollcommand'] = self.logs_scrollbar.set
-        
-        # Configure text widget for logging
-        self.logs_text.configure(state='disabled')
+        self.iv_label = ttk.Label(self.ivrv_frame, text="Implied Volatility (IV):")
+        self.iv_label.grid(row=1, column=0, padx=10, pady=10)
+        self.iv_value = ttk.Label(self.ivrv_frame, text="Calculating...")
+        self.iv_value.grid(row=1, column=1, padx=10, pady=10)
+
+        self.rv_label = ttk.Label(self.ivrv_frame, text="Realized Volatility (RV):")
+        self.rv_label.grid(row=2, column=0, padx=10, pady=10)
+        self.rv_value = ttk.Label(self.ivrv_frame, text="Calculating...")
+        self.rv_value.grid(row=2, column=1, padx=10, pady=10)
+
+        self.rv_time_var = tk.StringVar()
+        self.rv_time_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.rv_time_var)
+        self.rv_time_dropdown['values'] = ['15 min', '30 min', '1 hour', '2 hours']
+        self.rv_time_dropdown.grid(row=3, column=1, padx=10, pady=10)
+        self.rv_time_dropdown.current(0)
+
+        self.update_button = ttk.Button(self.ivrv_frame, text="Update Data", command=self.update_data)
+        self.update_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
+
+        self.last_update_label = ttk.Label(self.ivrv_frame, text="Last Update: N/A")
+        self.last_update_label.grid(row=5, column=0, columnspan=2, padx=10, pady=10)
 
     async def async_update_portfolio_display(self):
         """Update the portfolio display with current position data"""
-        print("Starting async_update_portfolio_display...")
-        
         try:
             # Update connection status
             if not ib.isConnected():
                 self.connection_status.config(text="Connection Status: Disconnected", foreground="red")
-                self.log_message("Error: Not connected to Interactive Brokers")
                 return
             else:
                 self.connection_status.config(text="Connection Status: Connected", foreground="green")
@@ -181,17 +174,11 @@ class Dashboard(tk.Frame):
 
             positions = get_portfolio_positions()
             if not positions:
-                self.log_message("No positions found in portfolio")
                 return
-
-            print(f"Fetched {len(positions)} positions for display.")
 
             for position in positions:
                 try:
                     contract = position.contract
-                    print(f"Processing position for symbol: {contract.symbol}, secType: {contract.secType}")
-
-                    # Get market price and PNL from portfolio data
                     market_price, market_value, unrealized_pnl = get_market_price(contract)
                     delta = get_delta(position, ib)
 
@@ -205,13 +192,9 @@ class Dashboard(tk.Frame):
                                         f"{position.avgCost:.2f}", 
                                         f"{market_price:.2f}", 
                                         f"{unrealized_pnl:.2f}")
-                    else:
-                        print(f"No market data available for {contract.symbol}")
-                        self.log_message(f"No market data available for {contract.symbol}")
 
                 except Exception as e:
                     print(f"Error processing position {contract.symbol}: {str(e)}")
-                    self.log_message(f"Error processing position {contract.symbol}: {str(e)}")
 
             # Update the last update time
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -220,11 +203,8 @@ class Dashboard(tk.Frame):
             
         except Exception as e:
             print(f"Error in async_update_portfolio_display: {str(e)}")
-            self.log_message(f"Error updating portfolio display: {str(e)}")
             self.update_status.config(text="Update Failed", foreground="red")
             self.portfolio_update_error = str(e)
-
-        print("Completed async_update_portfolio_display.")
 
     def insert_treeview_row(self, symbol, secType, position, delta, avg_cost, market_price, unrealized_pnl):
         """Insert a row into the portfolio treeview"""
@@ -234,18 +214,12 @@ class Dashboard(tk.Frame):
             ))
         except Exception as e:
             print(f"Error inserting row into treeview: {str(e)}")
-            self.log_message(f"Error inserting row into treeview: {str(e)}")
 
     def schedule_update_portfolio(self):
         """Schedule regular updates of the portfolio display"""
-        print("Scheduling portfolio update...")
         try:
             if ib.isConnected():
                 asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(), self.loop)
-                print("Scheduled portfolio update.")
-            else:
-                self.log_message("Cannot update portfolio: Not connected to Interactive Brokers")
-                self.connection_status.config(text="Connection Status: Disconnected", foreground="red")
         except Exception as e:
             print(f"Error scheduling portfolio update: {str(e)}")
         finally:
@@ -254,7 +228,6 @@ class Dashboard(tk.Frame):
 
     def load_stocks(self):
         """Load stock symbols into dropdowns"""
-        self.log_message("Loading stocks...")
         try:
             positions = get_portfolio_positions()
             eligible_symbols = []
@@ -266,24 +239,40 @@ class Dashboard(tk.Frame):
                     eligible_symbols.append(details)
 
             self.stock_dropdown['values'] = eligible_symbols
+            self.symbol_dropdown['values'] = eligible_symbols
             if eligible_symbols:
                 self.stock_dropdown.current(0)
-                self.log_message(f"Loaded {len(eligible_symbols)} eligible positions.")
-            else:
-                self.log_message("No eligible positions found.")
+                self.symbol_dropdown.current(0)
         except Exception as e:
-            self.log_message(f"Error loading stocks: {str(e)}")
+            print(f"Error loading stocks: {str(e)}")
 
-    def log_message(self, message):
-        """Add a message to the logs"""
+    def update_data(self):
+        """Update IV/RV data for the selected symbol"""
+        symbol = self.symbol_dropdown.get()
+        rv_time = self.rv_time_var.get()
+
         try:
-            self.logs_text.configure(state='normal')
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            self.logs_text.insert('end', f"{timestamp} - {message}\n")
-            self.logs_text.see('end')
-            self.logs_text.configure(state='disabled')
+            iv = get_iv(symbol)
+            if iv is not None:
+                self.iv_value.config(text=f"{iv:.2%}")
+            else:
+                self.iv_value.config(text="N/A")
         except Exception as e:
-            print(f"Error logging message: {str(e)}")
+            self.iv_value.config(text="Error")
+            print(f"Error updating IV: {str(e)}")
+
+        try:
+            window_days = 30  # Use a 30-day window for RV calculation
+            rv = get_latest_rv(symbol, window_days)
+            if rv is not None:
+                self.rv_value.config(text=f"{rv:.2%}")
+            else:
+                self.rv_value.config(text="N/A")
+        except Exception as e:
+            self.rv_value.config(text="Error")
+            print(f"Error updating RV: {str(e)}")
+        
+        self.last_update_label.config(text=f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     def run_auto_hedger(self):
         """Start the auto-hedger"""
@@ -293,70 +282,29 @@ class Dashboard(tk.Frame):
             delta_change = float(self.delta_change_entry.get())
             max_order_qty = int(self.max_order_qty_entry.get())
 
-            selected_indices = self.position_listbox.curselection()
-            selected_positions = [self.position_listbox.get(i) for i in selected_indices]
-
-            self.log_message(f"Starting Auto-Hedger for {stock_symbol}")
-            self.log_message(f"Target Delta: {target_delta}, Change Threshold: {delta_change}, Max Qty: {max_order_qty}")
-
-            start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty, selected_positions)
+            start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty)
         except Exception as e:
-            self.log_message(f"Error starting auto-hedger: {str(e)}")
+            print(f"Error starting auto-hedger: {str(e)}")
 
     def stop_auto_hedger(self):
         """Stop the auto-hedger"""
         try:
-            stop_auto_hedger()
-            self.log_message("Auto-Hedger stopped.")
+            stock_symbol = self.stock_var.get()
+            stop_auto_hedger(stock_symbol)
         except Exception as e:
-            self.log_message(f"Error stopping auto-hedger: {str(e)}")
+            print(f"Error stopping auto-hedger: {str(e)}")
 
     def update_hedger_status(self):
         """Update the auto-hedger status display"""
         try:
-            if is_hedger_running():
-                self.hedger_status_label.config(text="Auto-Hedger Status: ON", foreground="green")
+            stock_symbol = self.stock_var.get()
+            if is_hedger_running(stock_symbol):
+                self.hedger_status_label.config(text=f"Auto-Hedger Status: ON for {stock_symbol}", foreground="green")
             else:
                 self.hedger_status_label.config(text="Auto-Hedger Status: OFF", foreground="red")
         except Exception as e:
-            self.log_message(f"Error updating hedger status: {str(e)}")
+            print(f"Error updating hedger status: {str(e)}")
         self.after(1000, self.update_hedger_status)
-
-    def update_hedge_log(self):
-        """Update the hedge log display"""
-        try:
-            hedge_log = get_hedge_log()
-            if hedge_log:
-                for log_entry in hedge_log:
-                    self.log_message(log_entry)
-        except Exception as e:
-            self.log_message(f"Error updating hedge log: {str(e)}")
-        self.after(1000, self.update_hedge_log)
-
-    def process_auto_hedger_commands(self):
-        """Process commands from the auto-hedger"""
-        try:
-            command = get_command()
-            if command:
-                action = command[0]
-                if action == 'get_positions':
-                    stock_symbol = command[1]
-                    positions = [p for p in ib.positions() if p.contract.symbol == stock_symbol]
-                    command_queue.put(positions)
-                elif action == 'get_deltas':
-                    positions = command[1]
-                    deltas = []
-                    for p in positions:
-                        try:
-                            delta = get_delta(p, ib)
-                            deltas.append(delta)
-                        except Exception as e:
-                            print(f"Error getting delta for position {p}: {e}")
-                            deltas.append(0)
-                    command_queue.put(deltas)
-        except Exception as e:
-            self.log_message(f"Error processing auto-hedger command: {str(e)}")
-        self.after(100, self.process_auto_hedger_commands)
 
     def update_current_delta(self):
         """Update the current delta display"""
@@ -373,7 +321,7 @@ class Dashboard(tk.Frame):
             self.delta_value.config(text=f"{aggregate_delta:.2f}")
         except Exception as e:
             self.delta_value.config(text="Error")
-            self.log_message(f"Error updating current delta: {str(e)}")
+            print(f"Error updating current delta: {str(e)}")
         self.after(5000, self.update_current_delta)
 
     def on_stock_selection(self, event):
