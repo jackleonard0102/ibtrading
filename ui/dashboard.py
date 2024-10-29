@@ -31,132 +31,176 @@ class Dashboard(tk.Frame):
         self.update_hedger_status()
 
     def create_widgets(self):
-        self.master.geometry("1180x930")  # Reduced height since we removed Activity Logs
+        # Configure main window size and grid weights
+        self.master.geometry("1200x800")
         
-        # Configure grid layout for master (main window) to expand as needed
+        # Configure grid weights for the main window
+        self.grid(sticky="nsew")
         self.master.grid_rowconfigure(0, weight=1)
-        self.master.grid_rowconfigure(1, weight=3)
         self.master.grid_columnconfigure(0, weight=1)
         
-        # Create portfolio frame with status indicators
-        self.portfolio_frame = ttk.LabelFrame(self, text="Portfolio")
-        self.portfolio_frame.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        # Configure grid weights for the dashboard frame
+        self.grid_rowconfigure(0, weight=3)  # Portfolio section
+        self.grid_rowconfigure(1, weight=2)  # Auto-Hedger and IV/RV section
+        self.grid_columnconfigure(0, weight=1)
         
-        # Configure grid layout within portfolio_frame
-        self.portfolio_frame.grid_rowconfigure(0, weight=0)
-        self.portfolio_frame.grid_rowconfigure(1, weight=1)
-        self.portfolio_frame.grid_columnconfigure(0, weight=1)
+        # Create portfolio frame
+        self.create_portfolio_frame()
+        
+        # Create bottom frame to hold Auto-Hedger and IV/RV Calculator side by side
+        bottom_frame = ttk.Frame(self)
+        bottom_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
+        bottom_frame.grid_columnconfigure(0, weight=1)  # Auto-Hedger
+        bottom_frame.grid_columnconfigure(1, weight=1)  # IV/RV Calculator
+        
+        # Create Auto-Hedger and IV/RV Calculator frames in the bottom frame
+        self.create_hedger_frame(bottom_frame)
+        self.create_ivrv_frame(bottom_frame)
 
-        # Add status indicators for portfolio
-        self.portfolio_status_frame = ttk.Frame(self.portfolio_frame)
-        self.portfolio_status_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=2)
+    def create_portfolio_frame(self):
+        # Portfolio Frame
+        portfolio_frame = ttk.LabelFrame(self, text="Portfolio")
+        portfolio_frame.grid(row=0, column=0, padx=10, pady=5, sticky="nsew")
         
-        self.connection_status = ttk.Label(self.portfolio_status_frame, text="Connection Status: Checking...", foreground="orange")
+        # Status Frame
+        status_frame = ttk.Frame(portfolio_frame)
+        status_frame.pack(fill=tk.X, padx=5, pady=2)
+        
+        self.connection_status = ttk.Label(status_frame, text="Connection Status: Checking...", foreground="orange")
         self.connection_status.pack(side=tk.LEFT, padx=5)
         
-        self.update_status = ttk.Label(self.portfolio_status_frame, text="Last Update: Never", foreground="gray")
+        self.update_status = ttk.Label(status_frame, text="Last Update: Never", foreground="gray")
         self.update_status.pack(side=tk.LEFT, padx=5)
         
+        self.refresh_button = ttk.Button(status_frame, text="Refresh", 
+                                       command=lambda: asyncio.run_coroutine_threadsafe(
+                                           self.async_update_portfolio_display(), self.loop))
+        self.refresh_button.pack(side=tk.RIGHT, padx=5)
+        
+        # Portfolio Treeview
         self.portfolio_tree = ttk.Treeview(
-            self.portfolio_frame,
+            portfolio_frame,
             columns=('Symbol', 'Type', 'Position', 'Delta', 'Avg Cost', 'Market Price', 'Unrealized PNL'),
             show='headings',
-            height=20
+            height=10
         )
-        self.portfolio_tree.heading('Symbol', text='Symbol')
-        self.portfolio_tree.heading('Type', text='Type')
-        self.portfolio_tree.heading('Position', text='Position')
-        self.portfolio_tree.heading('Delta', text='Delta')
-        self.portfolio_tree.heading('Avg Cost', text='Avg Cost')
-        self.portfolio_tree.heading('Market Price', text='Market Price')
-        self.portfolio_tree.heading('Unrealized PNL', text='Unrealized PNL')
-        self.portfolio_tree.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-
-        self.portfolio_tree.column('Symbol', width=150)
-        self.portfolio_tree.column('Type', width=100)
-        self.portfolio_tree.column('Position', width=100)
-        self.portfolio_tree.column('Delta', width=100)
-        self.portfolio_tree.column('Avg Cost', width=100)
-        self.portfolio_tree.column('Market Price', width=100)
-        self.portfolio_tree.column('Unrealized PNL', width=150)
-
-        # Add refresh button for portfolio
-        self.refresh_button = ttk.Button(self.portfolio_status_frame, text="Refresh", 
-                                       command=lambda: asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(), self.loop))
-        self.refresh_button.pack(side=tk.RIGHT, padx=5)
-
-        # Auto Hedger Frame
-        self.hedger_frame = ttk.LabelFrame(self, text="Auto Hedger")
-        self.hedger_frame.grid(row=1, column=0, padx=10, pady=10, sticky="nsew")
-
-        self.stock_label = ttk.Label(self.hedger_frame, text="Select Stock Symbol:")
-        self.stock_label.grid(row=0, column=0, padx=10, pady=10)
-        self.stock_var = tk.StringVar()
-        self.stock_dropdown = ttk.Combobox(self.hedger_frame, textvariable=self.stock_var)
-        self.stock_dropdown.grid(row=0, column=1, padx=10, pady=10)
-        self.stock_dropdown.bind("<<ComboboxSelected>>", self.on_stock_selection)
-
-        self.delta_label = ttk.Label(self.hedger_frame, text="Current Delta:")
-        self.delta_label.grid(row=1, column=0, padx=10, pady=10)
-        self.delta_value = ttk.Label(self.hedger_frame, text="Loading...")
-        self.delta_value.grid(row=1, column=1, padx=10, pady=10)
-
-        self.target_delta_label = ttk.Label(self.hedger_frame, text="Target Delta:")
-        self.target_delta_label.grid(row=2, column=0, padx=10, pady=10)
-        self.target_delta_entry = ttk.Entry(self.hedger_frame)
-        self.target_delta_entry.grid(row=2, column=1, padx=10, pady=10)
-        self.target_delta_entry.insert(0, "200")
-
-        self.delta_change_label = ttk.Label(self.hedger_frame, text="Delta Change Threshold:")
-        self.delta_change_label.grid(row=3, column=0, padx=10, pady=10)
-        self.delta_change_entry = ttk.Entry(self.hedger_frame)
-        self.delta_change_entry.grid(row=3, column=1, padx=10, pady=10)
-        self.delta_change_entry.insert(0, "50")
-
-        self.max_order_qty_label = ttk.Label(self.hedger_frame, text="Max Order Qty:")
-        self.max_order_qty_label.grid(row=4, column=0, padx=10, pady=10)
-        self.max_order_qty_entry = ttk.Entry(self.hedger_frame)
-        self.max_order_qty_entry.grid(row=4, column=1, padx=10, pady=10)
-        self.max_order_qty_entry.insert(0, "500")
-
-        self.hedge_button = ttk.Button(self.hedger_frame, text="Run Auto-Hedger", command=self.run_auto_hedger)
-        self.hedge_button.grid(row=5, column=0, columnspan=2, padx=10, pady=10)
-
-        self.stop_button = ttk.Button(self.hedger_frame, text="Stop Auto-Hedger", command=self.stop_auto_hedger)
-        self.stop_button.grid(row=6, column=0, columnspan=2, padx=10, pady=10)
-
-        self.hedger_status_label = ttk.Label(self.hedger_frame, text="Auto-Hedger Status: OFF", foreground="red")
-        self.hedger_status_label.grid(row=7, column=0, columnspan=2, padx=10, pady=10)
-
-        # IV/RV Calculator Frame
-        self.ivrv_frame = ttk.LabelFrame(self, text="IV / RV Calculator")
-        self.ivrv_frame.grid(row=1, column=1, padx=10, pady=10, sticky="nsew")
-
-        self.symbol_var = tk.StringVar()
-        self.symbol_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.symbol_var)
-        self.symbol_dropdown.grid(row=0, column=1, padx=10, pady=10)
         
-        self.iv_label = ttk.Label(self.ivrv_frame, text="Implied Volatility (IV):")
-        self.iv_label.grid(row=1, column=0, padx=10, pady=10)
-        self.iv_value = ttk.Label(self.ivrv_frame, text="Calculating...")
-        self.iv_value.grid(row=1, column=1, padx=10, pady=10)
+        # Configure columns
+        columns = [
+            ('Symbol', 100),
+            ('Type', 80),
+            ('Position', 100),
+            ('Delta', 100),
+            ('Avg Cost', 100),
+            ('Market Price', 100),
+            ('Unrealized PNL', 120)
+        ]
+        
+        for col, width in columns:
+            self.portfolio_tree.heading(col, text=col)
+            self.portfolio_tree.column(col, width=width, minwidth=50)
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(portfolio_frame, orient=tk.VERTICAL, command=self.portfolio_tree.yview)
+        self.portfolio_tree.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack the treeview and scrollbar
+        self.portfolio_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
 
-        self.rv_label = ttk.Label(self.ivrv_frame, text="Realized Volatility (RV):")
-        self.rv_label.grid(row=2, column=0, padx=10, pady=10)
-        self.rv_value = ttk.Label(self.ivrv_frame, text="Calculating...")
-        self.rv_value.grid(row=2, column=1, padx=10, pady=10)
+    def create_hedger_frame(self, parent):
+        # Auto Hedger Frame
+        hedger_frame = ttk.LabelFrame(parent, text="Auto Hedger")
+        hedger_frame.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        
+        # Configure grid
+        for i in range(8):
+            hedger_frame.grid_rowconfigure(i, weight=1)
+        hedger_frame.grid_columnconfigure(1, weight=1)
+        
+        # Labels and inputs
+        labels_inputs = [
+            ("Select Stock Symbol:", self.create_stock_dropdown, 0),
+            ("Current Delta:", lambda f: ttk.Label(f, text="Loading..."), 1),
+            ("Target Delta:", lambda f: ttk.Entry(f), 2),
+            ("Delta Change Threshold:", lambda f: ttk.Entry(f), 3),
+            ("Max Order Qty:", lambda f: ttk.Entry(f), 4)
+        ]
+        
+        for label_text, input_creator, row in labels_inputs:
+            ttk.Label(hedger_frame, text=label_text).grid(row=row, column=0, padx=5, pady=5, sticky="e")
+            widget = input_creator(hedger_frame)
+            if isinstance(widget, ttk.Entry):
+                widget.grid(row=row, column=1, padx=5, pady=5, sticky="ew")
+            else:
+                widget.grid(row=row, column=1, padx=5, pady=5, sticky="w")
+            
+            if row == 1:
+                self.delta_value = widget
+            elif row == 2:
+                self.target_delta_entry = widget
+                widget.insert(0, "200")
+            elif row == 3:
+                self.delta_change_entry = widget
+                widget.insert(0, "50")
+            elif row == 4:
+                self.max_order_qty_entry = widget
+                widget.insert(0, "500")
+        
+        # Buttons and status
+        ttk.Button(hedger_frame, text="Run Auto-Hedger", command=self.run_auto_hedger).grid(
+            row=5, column=0, columnspan=2, pady=10)
+        ttk.Button(hedger_frame, text="Stop Auto-Hedger", command=self.stop_auto_hedger).grid(
+            row=6, column=0, columnspan=2, pady=5)
+        
+        self.hedger_status_label = ttk.Label(hedger_frame, text="Auto-Hedger Status: OFF", foreground="red")
+        self.hedger_status_label.grid(row=7, column=0, columnspan=2, pady=10)
 
+    def create_ivrv_frame(self, parent):
+        # IV/RV Calculator Frame
+        ivrv_frame = ttk.LabelFrame(parent, text="IV / RV Calculator")
+        ivrv_frame.grid(row=0, column=1, padx=5, pady=5, sticky="nsew")
+        
+        # Configure grid
+        for i in range(6):
+            ivrv_frame.grid_rowconfigure(i, weight=1)
+        ivrv_frame.grid_columnconfigure(1, weight=1)
+        
+        # Symbol dropdown
+        ttk.Label(ivrv_frame, text="Select Symbol:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.symbol_var = tk.StringVar()
+        self.symbol_dropdown = ttk.Combobox(ivrv_frame, textvariable=self.symbol_var)
+        self.symbol_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        
+        # IV and RV displays
+        ttk.Label(ivrv_frame, text="Implied Volatility (IV):").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.iv_value = ttk.Label(ivrv_frame, text="Calculating...")
+        self.iv_value.grid(row=1, column=1, padx=5, pady=5, sticky="w")
+        
+        ttk.Label(ivrv_frame, text="Realized Volatility (RV):").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.rv_value = ttk.Label(ivrv_frame, text="Calculating...")
+        self.rv_value.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        
+        # Time period dropdown
+        ttk.Label(ivrv_frame, text="Time Period:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
         self.rv_time_var = tk.StringVar()
-        self.rv_time_dropdown = ttk.Combobox(self.ivrv_frame, textvariable=self.rv_time_var)
+        self.rv_time_dropdown = ttk.Combobox(ivrv_frame, textvariable=self.rv_time_var)
         self.rv_time_dropdown['values'] = ['15 min', '30 min', '1 hour', '2 hours']
-        self.rv_time_dropdown.grid(row=3, column=1, padx=10, pady=10)
         self.rv_time_dropdown.current(0)
+        self.rv_time_dropdown.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
+        
+        # Update button and last update label
+        ttk.Button(ivrv_frame, text="Update Data", command=self.update_data).grid(
+            row=4, column=0, columnspan=2, pady=10)
+        
+        self.last_update_label = ttk.Label(ivrv_frame, text="Last Update: N/A")
+        self.last_update_label.grid(row=5, column=0, columnspan=2, pady=5)
 
-        self.update_button = ttk.Button(self.ivrv_frame, text="Update Data", command=self.update_data)
-        self.update_button.grid(row=4, column=0, columnspan=2, padx=10, pady=10)
-
-        self.last_update_label = ttk.Label(self.ivrv_frame, text="Last Update: N/A")
-        self.last_update_label.grid(row=5, column=0, columnspan=2, padx=10, pady=10)
+    def create_stock_dropdown(self, parent):
+        self.stock_var = tk.StringVar()
+        self.stock_dropdown = ttk.Combobox(parent, textvariable=self.stock_var)
+        self.stock_dropdown.bind("<<ComboboxSelected>>", self.on_stock_selection)
+        return self.stock_dropdown
 
     async def async_update_portfolio_display(self):
         """Update the portfolio display with current position data"""
