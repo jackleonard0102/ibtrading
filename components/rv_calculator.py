@@ -1,129 +1,178 @@
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from ib_insync import Stock
 from components.ib_connection import ib
 import nest_asyncio
-import threading
 
 nest_asyncio.apply()
 
-def get_historical_data(symbol, window_days=30):
-    """Get historical price data for a symbol"""
+def reqHistoricalDataAsync(contract, window_days=30):
+    """Get historical data safely with proper cleanup"""
     try:
-        contract = Stock(symbol, 'SMART', 'USD')
-        ib.qualifyContracts(contract)
-        
-        # Request historical data
-        bars = ib.reqHistoricalData(
-            contract,
-            endDateTime='',  # Empty string means now
+        # Request historical data with more comprehensive parameters
+        data = ib.reqHistoricalData(
+            contract=contract,
+            endDateTime='',
             durationStr=f'{window_days} D',
             barSizeSetting='1 day',
             whatToShow='TRADES',
             useRTH=True,
-            formatDate=1
+            formatDate=1,
+            timeout=30  # Add timeout parameter
         )
         
-        if not bars:
-            print(f"No historical data available for {symbol}")
+        if not data:
+            print(f"No historical data received for {contract.symbol}")
+            return None
+            
+        return data
+    except Exception as e:
+        print(f"Error requesting historical data: {str(e)}")
+        return None
+    finally:
+        try:
+            ib.sleep(0)  # Allow pending callbacks to be processed
+        except:
+            pass
+
+def get_historical_data(symbol, window_days=30):
+    """Get historical price data for a symbol with improved validation"""
+    try:
+        if not isinstance(window_days, int) or window_days <= 0:
+            print("Invalid window_days parameter")
+            return None
+            
+        contract = Stock(symbol, 'SMART', 'USD')
+        ib.qualifyContracts(contract)
+        
+        # Get historical data with timeout
+        data = reqHistoricalDataAsync(contract, window_days)
+        if not data:
             return None
         
-        # Extract prices and timestamps
-        prices = np.array([bar.close for bar in bars])
-        highs = np.array([bar.high for bar in bars])
-        lows = np.array([bar.low for bar in bars])
-        timestamps = [bar.date for bar in bars]
+        # Extract and validate price data
+        closes = np.array([bar.close for bar in data if hasattr(bar, 'close') and bar.close > 0])
         
-        return {
-            'prices': prices,
-            'highs': highs,
-            'lows': lows,
-            'timestamps': timestamps
-        }
+        if len(closes) < window_days * 0.8:  # Require at least 80% of expected data points
+            print(f"Insufficient historical data for {symbol}: got {len(closes)} days, expected {window_days}")
+            return None
+            
+        return closes
         
     except Exception as e:
         print(f"Error fetching historical data for {symbol}: {str(e)}")
         return None
 
 def calculate_returns(prices):
-    """Calculate log returns from price series"""
-    if len(prices) < 2:
-        return None
-    return np.log(prices[1:] / prices[:-1])
-
-def annualize_volatility(volatility, time_period='daily'):
-    """Convert volatility to annualized value"""
-    if time_period == 'daily':
-        return volatility * np.sqrt(252)  # Standard trading days in a year
-    return volatility
-
-def calculate_standard_volatility(returns):
-    """Calculate standard volatility"""
+    """Calculate log returns from price series with improved validation"""
     try:
-        return np.std(returns, ddof=1)
+        if not isinstance(prices, np.ndarray):
+            prices = np.array(prices)
+            
+        # Remove any zero or negative prices
+        valid_prices = prices[prices > 0]
+        if len(valid_prices) < 2:
+            print("Insufficient valid prices for return calculation")
+            return None
+            
+        # Calculate log returns
+        returns = np.log(valid_prices[1:] / valid_prices[:-1])
+        
+        # Remove any infinite or NaN values
+        returns = returns[np.isfinite(returns)]
+        if len(returns) == 0:
+            print("No valid returns after filtering")
+            return None
+            
+        # Check for extreme values
+        mean_return = np.mean(returns)
+        std_return = np.std(returns)
+        valid_returns = returns[np.abs(returns - mean_return) <= 4 * std_return]  # Remove outliers
+        
+        if len(valid_returns) < len(returns) * 0.8:  # Ensure we haven't removed too many points
+            print("Too many outliers in return data")
+            return None
+            
+        return valid_returns
+        
     except Exception as e:
-        print(f"Error calculating standard volatility: {str(e)}")
+        print(f"Error calculating returns: {str(e)}")
         return None
 
-def calculate_parkinson_volatility(highs, lows):
-    """Calculate Parkinson volatility estimator"""
+def annualize_volatility(daily_vol, trading_days=252):
+    """Convert daily volatility to annualized value with improved validation"""
     try:
-        ranges = np.log(highs/lows)
-        return np.sqrt(1/(4 * np.log(2)) * np.mean(ranges**2))
+        if not isinstance(daily_vol, (int, float)) or not np.isfinite(daily_vol) or daily_vol < 0:
+            print("Invalid daily volatility value")
+            return None
+            
+        if not isinstance(trading_days, int) or trading_days <= 0:
+            print("Invalid trading days parameter")
+            return None
+            
+        # Standard annualization
+        annual_vol = daily_vol * np.sqrt(trading_days)
+        
+        # Sanity check on the result
+        if not np.isfinite(annual_vol) or annual_vol < 0 or annual_vol > 10:  # 1000% vol cap
+            print("Annualized volatility out of reasonable range")
+            return None
+            
+        return annual_vol
+        
     except Exception as e:
-        print(f"Error calculating Parkinson volatility: {str(e)}")
+        print(f"Error annualizing volatility: {str(e)}")
         return None
 
 def calculate_realized_volatility(symbol, window_days=30):
-    """Calculate realized volatility"""
+    """Calculate realized volatility with comprehensive validation"""
     try:
-        # Get historical data
-        data = get_historical_data(symbol, window_days)
-        if data is None:
+        # Input validation
+        if not isinstance(window_days, int) or window_days <= 0:
+            print("Invalid window_days parameter")
+            return None
+            
+        # Get historical prices
+        prices = get_historical_data(symbol, window_days)
+        if prices is None or len(prices) < 2:
             return None
             
         # Calculate returns
-        returns = calculate_returns(data['prices'])
-        if returns is None or len(returns) == 0:
+        returns = calculate_returns(prices)
+        if returns is None or len(returns) < window_days * 0.5:  # Require at least 50% of expected data
             return None
-
-        # Calculate standard volatility
-        std_vol = calculate_standard_volatility(returns)
-        if std_vol is None:
-            return None
-
-        # Calculate Parkinson volatility
-        park_vol = calculate_parkinson_volatility(data['highs'][1:], data['lows'][1:])
-        
-        # Use average of both measures if available
-        if park_vol is not None:
-            vol = (std_vol + park_vol) / 2
+            
+        # Calculate daily volatility with validation
+        if len(returns) >= 2:
+            daily_vol = np.std(returns, ddof=1)
+            if not np.isfinite(daily_vol) or daily_vol <= 0:
+                print("Invalid daily volatility calculation")
+                return None
+                
+            # Annualize volatility
+            rv = annualize_volatility(daily_vol)
+            if rv is None:
+                return None
+                
+            return rv
         else:
-            vol = std_vol
-
-        # Annualize volatility
-        return annualize_volatility(vol, 'daily')
-
+            print("Insufficient data for volatility calculation")
+            return None
+            
     except Exception as e:
-        print(f"Error calculating realized volatility for {symbol}: {str(e)}")
+        print(f"Error calculating realized volatility: {str(e)}")
         return None
 
 def get_latest_rv(symbol, window_days=30):
-    """Get the latest realized volatility for a symbol"""
+    """Get the latest realized volatility for a symbol with error handling"""
     try:
-        result = [None]  # Use a list to store result from thread
-        
-        def run_calculation():
-            result[0] = calculate_realized_volatility(symbol, window_days)
-            
-        # Run calculation in a separate thread
-        thread = threading.Thread(target=run_calculation)
-        thread.daemon = True
-        thread.start()
-        thread.join(timeout=10)  # Wait up to 10 seconds
-        
-        return result[0]
-        
+        rv = calculate_realized_volatility(symbol, window_days)
+        return rv
     except Exception as e:
-        print(f"Error calculating RV for {symbol}: {str(e)}")
+        print(f"Error getting RV for {symbol}: {str(e)}")
         return None
+    finally:
+        try:
+            ib.sleep(0)  # Allow pending callbacks to be processed
+        except:
+            pass
