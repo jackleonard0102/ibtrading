@@ -18,6 +18,10 @@ from components.auto_hedger import (
 )
 from components.iv_calculator import get_iv
 from components.rv_calculator import get_latest_rv
+import logging
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 class AlertNotification(tk.Toplevel):
     """Alert notification window."""
@@ -132,7 +136,6 @@ class Dashboard(tk.Frame):
         self.update_status = ttk.Label(status_frame, text="Last Update: Never", foreground="gray")
         self.update_status.pack(side=tk.LEFT, padx=5)
         
-        # Update refresh button to use new refresh handler
         self.refresh_button = ttk.Button(status_frame, text="Refresh", command=self.on_refresh_click)
         self.refresh_button.pack(side=tk.RIGHT, padx=5)
         
@@ -224,25 +227,29 @@ class Dashboard(tk.Frame):
         self.symbol_dropdown.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
         
         ttk.Label(ivrv_frame, text="Implied Volatility (IV):").grid(row=1, column=0, padx=5, pady=5, sticky="e")
-        self.iv_value = ttk.Label(ivrv_frame, text="Calculating...")
+        self.iv_value = ttk.Label(ivrv_frame, text="N/A")
         self.iv_value.grid(row=1, column=1, padx=5, pady=5, sticky="w")
         
         ttk.Label(ivrv_frame, text="Realized Volatility (RV):").grid(row=2, column=0, padx=5, pady=5, sticky="e")
-        self.rv_value = ttk.Label(ivrv_frame, text="Calculating...")
+        self.rv_value = ttk.Label(ivrv_frame, text="N/A")
         self.rv_value.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         
         ttk.Label(ivrv_frame, text="Time Period:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
-        self.rv_time_var = tk.StringVar()
+        self.rv_time_var = tk.StringVar(value="30")  # Default 30 days
         self.rv_time_dropdown = ttk.Combobox(ivrv_frame, textvariable=self.rv_time_var)
-        self.rv_time_dropdown['values'] = ['15 min', '30 min', '1 hour', '2 hours']
-        self.rv_time_dropdown.current(0)
+        self.rv_time_dropdown['values'] = ['15', '30', '60', '90']  # Days
+        self.rv_time_dropdown.current(1)  # Default to 30 days
         self.rv_time_dropdown.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
         
+        # Add progress indicator
+        self.calc_status = ttk.Label(ivrv_frame, text="")
+        self.calc_status.grid(row=4, column=0, columnspan=2, pady=5)
+        
         ttk.Button(ivrv_frame, text="Update Data", command=self.update_data).grid(
-            row=4, column=0, columnspan=2, pady=10)
+            row=5, column=0, columnspan=2, pady=10)
         
         self.last_update_label = ttk.Label(ivrv_frame, text="Last Update: N/A")
-        self.last_update_label.grid(row=5, column=0, columnspan=2, pady=5)
+        self.last_update_label.grid(row=6, column=0, columnspan=2, pady=5)
 
     def show_alert_history(self):
         history_window = tk.Toplevel(self)
@@ -404,7 +411,7 @@ class Dashboard(tk.Frame):
                 # Regular update with cache
                 asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(force_refresh=False), self.loop)
         except Exception as e:
-            print(f"Error scheduling portfolio update: {str(e)}")
+            logger.error(f"Error scheduling portfolio update: {str(e)}")
         finally:
             self.after(5000, self.schedule_update_portfolio)
 
@@ -412,49 +419,91 @@ class Dashboard(tk.Frame):
         try:
             positions = get_portfolio_positions()
             position_details = []
+            symbols = set()  # For IV/RV calculator
             
             for p in positions:
                 if p.contract.secType == 'STK':
                     position_details.append(p.contract.symbol)
+                    symbols.add(p.contract.symbol)
                 elif p.contract.secType == 'OPT':
                     position_details.append(p.contract.localSymbol)
+                    symbols.add(p.contract.symbol)  # Add underlying symbol for IV/RV
 
-            self.position_dropdown['values'] = position_details
-            self.symbol_dropdown['values'] = position_details
+            self.position_dropdown['values'] = position_details  # Keep full details for auto hedger
+            self.symbol_dropdown['values'] = list(symbols)  # Only underlying symbols for IV/RV
             if position_details:
                 self.position_dropdown.current(0)
+            if symbols:
                 self.symbol_dropdown.current(0)
                 
         except Exception as e:
-            print(f"Error loading positions: {str(e)}")
+            logger.error(f"Error loading positions: {str(e)}")
 
-    def update_data(self):
-        symbol = self.symbol_var.get()
-        if not symbol:
-            return
-            
+    async def async_update_volatility(self):
+        """Calculate IV and RV asynchronously."""
         try:
-            iv = get_iv(symbol)
+            symbol = self.symbol_var.get()
+            if not symbol:
+                return
+                
+            self.calc_status.config(text="Calculating...", foreground="orange")
+            window_days = int(self.rv_time_var.get())
+            
+            # Run IV and RV calculations concurrently
+            iv_task = asyncio.create_task(get_iv(symbol))
+            rv_task = asyncio.create_task(get_latest_rv(symbol, window_days))
+            
+            iv, rv = await asyncio.gather(iv_task, rv_task)
+            
+            # Update IV display
             if iv is not None:
                 self.iv_value.config(text=f"{iv:.2%}")
             else:
                 self.iv_value.config(text="N/A")
-        except Exception as e:
-            self.iv_value.config(text="Error")
-            print(f"Error updating IV: {str(e)}")
-
-        try:
-            window_days = 30
-            rv = get_latest_rv(symbol, window_days)
+                
+            # Update RV display
             if rv is not None:
                 self.rv_value.config(text=f"{rv:.2%}")
             else:
                 self.rv_value.config(text="N/A")
+                
+            self.calc_status.config(text="Calculation complete", foreground="green")
+            self.last_update_label.config(text=f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # Clear status after a delay
+            self.after(3000, lambda: self.calc_status.config(text=""))
+            
         except Exception as e:
+            logger.error(f"Error updating volatility: {str(e)}")
+            self.calc_status.config(text=f"Error: {str(e)}", foreground="red")
+            self.iv_value.config(text="Error")
             self.rv_value.config(text="Error")
-            print(f"Error updating RV: {str(e)}")
-        
-        self.last_update_label.config(text=f"Last Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    def update_data(self):
+        """Update IV/RV data with improved async handling."""
+        try:
+            symbol = self.symbol_var.get()
+            if not symbol:
+                messagebox.showerror("Error", "Please select a symbol")
+                return
+                
+            # Disable update button during calculation
+            update_button = self.winfo_children()[1].winfo_children()[1].winfo_children()[-2]
+            update_button.config(state='disabled')
+            
+            # Run the calculation asynchronously
+            asyncio.run_coroutine_threadsafe(self.async_update_volatility(), self.loop)
+            
+            # Re-enable update button after a delay
+            self.after(100, lambda: update_button.config(state='normal'))
+            
+        except Exception as e:
+            logger.error(f"Error in update_data: {str(e)}")
+            messagebox.showerror("Error", f"Failed to update data: {str(e)}")
+            
+        finally:
+            # Ensure button is re-enabled
+            self.after(100, lambda: update_button.config(state='normal'))
 
     def run_auto_hedger(self):
         try:
@@ -470,7 +519,7 @@ class Dashboard(tk.Frame):
             start_auto_hedger(position_key, target_delta, delta_change, max_order_qty)
             
         except Exception as e:
-            print(f"Error starting auto-hedger: {str(e)}")
+            logger.error(f"Error starting auto-hedger: {str(e)}")
             messagebox.showerror("Error", f"Failed to start auto-hedger: {str(e)}")
 
     def stop_auto_hedger(self):
@@ -479,7 +528,7 @@ class Dashboard(tk.Frame):
             if position_key:
                 stop_auto_hedger(position_key)
         except Exception as e:
-            print(f"Error stopping auto-hedger: {str(e)}")
+            logger.error(f"Error stopping auto-hedger: {str(e)}")
             messagebox.showerror("Error", f"Failed to stop auto-hedger: {str(e)}")
 
     def update_hedger_status(self):
@@ -494,7 +543,7 @@ class Dashboard(tk.Frame):
             else:
                 self.hedger_status_label.config(text="Auto-Hedger Status: OFF", foreground="red")
         except Exception as e:
-            print(f"Error updating hedger status: {str(e)}")
+            logger.error(f"Error updating hedger status: {str(e)}")
         self.after(1000, self.update_hedger_status)
 
     def update_current_delta(self):
@@ -515,13 +564,10 @@ class Dashboard(tk.Frame):
             if filtered_positions:
                 total_delta = 0.0
                 for position in filtered_positions:
-                    # Ensure exchange is set correctly before getting delta
                     position.contract.exchange = 'SMART'
                     if position.contract.secType == 'OPT':
                         position.contract.exchange = 'AMEX'
-                    
                     delta = get_delta(position, ib)
-                    print(f"Delta for {position.contract.localSymbol}: {delta}")
                     total_delta += delta
 
                 self.delta_value.config(text=f"{total_delta:,.2f}")
@@ -529,7 +575,7 @@ class Dashboard(tk.Frame):
                 self.delta_value.config(text="N/A")
                 
         except Exception as e:
-            print(f"Error updating current delta: {str(e)}")
+            logger.error(f"Error updating current delta: {str(e)}")
             self.delta_value.config(text="Error")
             
         self.after(5000, self.update_current_delta)
@@ -544,4 +590,4 @@ class Dashboard(tk.Frame):
                 # Force refresh when manually requested
                 asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(force_refresh=True), self.loop)
         except Exception as e:
-            print(f"Error during manual refresh: {str(e)}")
+            logger.error(f"Error during manual refresh: {str(e)}")
