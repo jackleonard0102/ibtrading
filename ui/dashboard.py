@@ -235,10 +235,10 @@ class Dashboard(tk.Frame):
         self.rv_value.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         
         ttk.Label(ivrv_frame, text="Time Period:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
-        self.rv_time_var = tk.StringVar(value="30")  # Default 30 days
+        self.rv_time_var = tk.StringVar(value="15 min")  # Default 15 minutes
         self.rv_time_dropdown = ttk.Combobox(ivrv_frame, textvariable=self.rv_time_var)
-        self.rv_time_dropdown['values'] = ['15', '30', '60', '90']  # Days
-        self.rv_time_dropdown.current(1)  # Default to 30 days
+        self.rv_time_dropdown['values'] = ['15 min', '30 min', '1 hour', '2 hours']
+        self.rv_time_dropdown.current(0)
         self.rv_time_dropdown.grid(row=3, column=1, padx=5, pady=5, sticky="ew")
         
         # Add progress indicator
@@ -419,21 +419,24 @@ class Dashboard(tk.Frame):
         try:
             positions = get_portfolio_positions()
             position_details = []
-            symbols = set()  # For IV/RV calculator
+            position_symbols = []  # For IV/RV calculator
             
             for p in positions:
                 if p.contract.secType == 'STK':
                     position_details.append(p.contract.symbol)
-                    symbols.add(p.contract.symbol)
+                    position_symbols.append(p.contract.symbol)
                 elif p.contract.secType == 'OPT':
                     position_details.append(p.contract.localSymbol)
-                    symbols.add(p.contract.symbol)  # Add underlying symbol for IV/RV
+                    position_symbols.append(p.contract.localSymbol)
 
-            self.position_dropdown['values'] = position_details  # Keep full details for auto hedger
-            self.symbol_dropdown['values'] = list(symbols)  # Only underlying symbols for IV/RV
+            # Sort symbols
+            position_details.sort()
+            position_symbols.sort()
+
+            self.position_dropdown['values'] = position_details  # For auto hedger
+            self.symbol_dropdown['values'] = position_symbols   # Show both stocks and options for IV/RV
             if position_details:
                 self.position_dropdown.current(0)
-            if symbols:
                 self.symbol_dropdown.current(0)
                 
         except Exception as e:
@@ -447,11 +450,14 @@ class Dashboard(tk.Frame):
                 return
                 
             self.calc_status.config(text="Calculating...", foreground="orange")
-            window_days = int(self.rv_time_var.get())
+            
+            # Convert time period to minutes
+            time_str = self.rv_time_var.get()
+            minutes = self.parse_time_period(time_str)
             
             # Run IV and RV calculations concurrently
             iv_task = asyncio.create_task(get_iv(symbol))
-            rv_task = asyncio.create_task(get_latest_rv(symbol, window_days))
+            rv_task = asyncio.create_task(get_latest_rv(symbol, time_period_minutes=minutes))
             
             iv, rv = await asyncio.gather(iv_task, rv_task)
             
@@ -591,3 +597,22 @@ class Dashboard(tk.Frame):
                 asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(force_refresh=True), self.loop)
         except Exception as e:
             logger.error(f"Error during manual refresh: {str(e)}")
+
+    def parse_time_period(self, time_str):
+        """Convert time period string to minutes."""
+        try:
+            parts = time_str.split()
+            value = int(parts[0])
+            unit = parts[1]
+            
+            if unit == 'min':
+                return value
+            elif unit == 'hour' or unit == 'hours':
+                return value * 60
+            else:
+                logger.error(f"Invalid time unit: {unit}")
+                return 15  # Default to 15 minutes
+                
+        except Exception as e:
+            logger.error(f"Error parsing time period: {str(e)}")
+            return 15  # Default to 15 minutes
