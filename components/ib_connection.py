@@ -17,7 +17,7 @@ ib = IB()
 # Cache for market data
 market_data_cache = {}
 last_market_data_request = {}
-MARKET_DATA_CACHE_TIME = 5  # seconds
+MARKET_DATA_CACHE_TIME = 1  # seconds for real-time updates
 
 async def connect_ib() -> bool:
     """
@@ -61,8 +61,9 @@ def get_portfolio_positions() -> List[Any]:
             logger.error("Cannot fetch positions: Not connected to IBKR")
             return []
             
+        # Always get fresh positions for accurate data
         positions = ib.positions()
-        logger.debug(f"Fetched {len(positions)} positions")  # Changed to debug level
+        logger.debug(f"Fetched {len(positions)} positions")
         return positions
         
     except Exception as e:
@@ -105,6 +106,7 @@ def get_market_price(contract: Stock) -> Tuple[Optional[float], Optional[float],
             (market_price, market_value, unrealized_pnl) if successful, (None, None, None) otherwise.
     """
     try:
+        # Always get fresh portfolio data
         portfolio = ib.portfolio()
         for item in portfolio:
             if (item.contract.symbol == contract.symbol and 
@@ -114,8 +116,12 @@ def get_market_price(contract: Stock) -> Tuple[Optional[float], Optional[float],
         logger.error(f"Error getting market price for {contract.symbol}: {e}")
     return None, None, None
 
-def can_request_market_data(contract_id: int) -> bool:
+def can_request_market_data(contract_id: int, force_refresh: bool = False) -> bool:
     """Check if we can request market data for a contract based on cache time"""
+    if force_refresh:
+        last_market_data_request[contract_id] = datetime.now()
+        return True
+
     now = datetime.now()
     if contract_id in last_market_data_request:
         last_request = last_market_data_request[contract_id]
@@ -164,13 +170,14 @@ def calculate_theoretical_delta(contract: Option, market_price: float) -> float:
         logger.error(f"Error calculating theoretical delta: {e}")
         return 0.0
 
-def get_delta(position: Any, ib_instance: IB) -> float:
+def get_delta(position: Any, ib_instance: IB, force_refresh: bool = False) -> float:
     """
     Calculate delta for a position.
     
     Args:
         position: Position object.
         ib_instance: IB connection instance.
+        force_refresh: Force recalculation of delta ignoring cache
         
     Returns:
         float: Position delta.
@@ -185,9 +192,9 @@ def get_delta(position: Any, ib_instance: IB) -> float:
 
         # For options, calculate delta based on position and contract
         elif contract.secType == 'OPT':
-            # Try to get cached market data first
+            # Only check cache if not forcing refresh
             cached_delta = None
-            if hasattr(contract, 'conId'):
+            if not force_refresh and hasattr(contract, 'conId'):
                 cached_delta = get_cached_market_data(contract.conId)
             
             contract_delta = None
@@ -195,8 +202,8 @@ def get_delta(position: Any, ib_instance: IB) -> float:
                 contract_delta = cached_delta
                 logger.debug(f"Using cached delta for {contract.localSymbol}")
             else:
-                # Only request new market data if cache expired
-                if hasattr(contract, 'conId') and can_request_market_data(contract.conId):
+                # Request new market data if forced or cache expired
+                if hasattr(contract, 'conId') and can_request_market_data(contract.conId, force_refresh):
                     # Get current stock price from portfolio
                     portfolio = [item for item in ib.portfolio() if item.contract.symbol == contract.symbol]
                     if portfolio:

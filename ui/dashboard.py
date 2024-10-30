@@ -132,9 +132,8 @@ class Dashboard(tk.Frame):
         self.update_status = ttk.Label(status_frame, text="Last Update: Never", foreground="gray")
         self.update_status.pack(side=tk.LEFT, padx=5)
         
-        self.refresh_button = ttk.Button(status_frame, text="Refresh", 
-                                       command=lambda: asyncio.run_coroutine_threadsafe(
-                                           self.async_update_portfolio_display(), self.loop))
+        # Update refresh button to use new refresh handler
+        self.refresh_button = ttk.Button(status_frame, text="Refresh", command=self.on_refresh_click)
         self.refresh_button.pack(side=tk.RIGHT, padx=5)
         
         self.portfolio_tree = ttk.Treeview(
@@ -292,7 +291,7 @@ class Dashboard(tk.Frame):
         
         self.after(1000, self.check_alerts)
 
-    async def async_update_portfolio_display(self):
+    async def async_update_portfolio_display(self, force_refresh=False):
         """Update the portfolio display with current position data"""
         try:
             if not ib.isConnected():
@@ -302,7 +301,7 @@ class Dashboard(tk.Frame):
                 self.connection_status.config(text="Connection Status: Connected", foreground="green")
 
             # Get current positions first
-            positions = get_portfolio_positions()
+            positions = get_portfolio_positions()  # Always gets fresh positions
             if not positions:
                 # Only clear if we have no positions
                 for i in self.portfolio_tree.get_children():
@@ -331,8 +330,8 @@ class Dashboard(tk.Frame):
                     if contract.secType == 'OPT':
                         await ib.qualifyContractsAsync(contract)
                     
-                    market_price, market_value, unrealized_pnl = get_market_price(contract)
-                    delta = get_delta(position, ib)
+                    market_price, market_value, unrealized_pnl = get_market_price(contract)  # Gets fresh portfolio data
+                    delta = get_delta(position, ib, force_refresh)  # Force refresh when requested
                     
                     if market_price is None:
                         continue
@@ -399,14 +398,14 @@ class Dashboard(tk.Frame):
             self.portfolio_update_error = str(e)
 
     def schedule_update_portfolio(self):
-        """Schedule portfolio updates"""
+        """Schedule regular updates of the portfolio display"""
         try:
             if ib.isConnected():
-                asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(), self.loop)
+                # Regular update with cache
+                asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(force_refresh=False), self.loop)
         except Exception as e:
             print(f"Error scheduling portfolio update: {str(e)}")
         finally:
-            # Update every 5 seconds instead of 1
             self.after(5000, self.schedule_update_portfolio)
 
     def load_positions(self):
@@ -537,3 +536,12 @@ class Dashboard(tk.Frame):
 
     def on_position_selection(self, event):
         self.update_current_delta()
+
+    def on_refresh_click(self):
+        """Handle manual refresh button click"""
+        try:
+            if ib.isConnected():
+                # Force refresh when manually requested
+                asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(force_refresh=True), self.loop)
+        except Exception as e:
+            print(f"Error during manual refresh: {str(e)}")
