@@ -1,51 +1,38 @@
-# Byte-compiled files  
-__pycache__/  
-*.py[cod]  
-
-# Distribution / packaging  
-.Python  
-env/  
-venv/  
-ENV/  
-env.bak/  
-venv.bak/  
-*.egg-info/  
-dist/  
-build/  
-<<<<<<< Updated upstream
-.venv
-.venv_311
-=======
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
 .venv/
-.venv_311/
->>>>>>> Stashed changes
+env/
+venv/
+ENV/
+dist/
+build/
+*.egg
+*.egg-info/
+*.manifest
+*.spec
+.pytest_cache/
 
-# IDE and editor specific files  
-.vscode/  
-.idea/  
-*.swp  
-*.swo  
-*.sublime-workspace  
-*.sublime-project  
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*.bak
 
-# Jupyter Notebook checkpoints  
-.ipynb_checkpoints  
+# Logs
+logs/
+*.log
 
-# Pytest  
-.cache  
-*.pytest_cache/  
-
-# Coverage reports  
-htmlcov/  
-*.cover  
-*.coverage  
-coverage.xml  
-
-# mypy  
-.mypy_cache/  
-.dmypy.json  
-dmypy.json  
-
-# Python language server  
-pylint-report.txt  
-pylint-global.rc  
+# Project specific
+.coverage
+htmlcov/
+.mypy_cache/
+.tox/
+.hypothesis/
+.cache

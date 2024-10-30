@@ -1,6 +1,6 @@
 import asyncio
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from datetime import datetime
 from components.ib_connection import (
     get_portfolio_positions,
@@ -12,10 +12,79 @@ from components.ib_connection import (
 from components.auto_hedger import (
     start_auto_hedger,
     stop_auto_hedger,
-    is_hedger_running
+    is_hedger_running,
+    get_recent_alerts
 )
 from components.iv_calculator import get_iv
 from components.rv_calculator import get_latest_rv
+
+class AlertNotification(tk.Toplevel):
+    """Alert notification window."""
+    
+    def __init__(self, parent, alert):
+        super().__init__(parent)
+        
+        self.title("Trade Alert")
+        self.geometry("400x200")
+        
+        # Configure style
+        style = ttk.Style()
+        if alert.status == 'FILLED':
+            bg_color = '#e6ffe6'  # Light green
+            fg_color = '#006600'  # Dark green
+        elif alert.status == 'FAILED' or alert.status == 'ERROR':
+            bg_color = '#ffe6e6'  # Light red
+            fg_color = '#cc0000'  # Dark red
+        else:
+            bg_color = '#fff9e6'  # Light yellow
+            fg_color = '#cc7700'  # Dark orange
+            
+        self.configure(bg=bg_color)
+        
+        # Header
+        header_frame = ttk.Frame(self)
+        header_frame.pack(fill=tk.X, padx=10, pady=(10,5))
+        
+        ttk.Label(header_frame, text=f"Trade Alert - {alert.status}", 
+                 font=('Arial', 12, 'bold'), foreground=fg_color).pack()
+        
+        # Content
+        content_frame = ttk.Frame(self)
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        
+        details = [
+            ("Symbol:", alert.symbol),
+            ("Action:", alert.action),
+            ("Quantity:", str(alert.quantity)),
+            ("Type:", alert.order_type),
+            ("Time:", alert.timestamp)
+        ]
+        
+        if alert.price:
+            details.append(("Price:", f"${alert.price:.2f}"))
+            
+        if alert.details:
+            details.append(("Details:", alert.details))
+            
+        for label, value in details:
+            row = ttk.Frame(content_frame)
+            row.pack(fill=tk.X, pady=2)
+            ttk.Label(row, text=label, width=10).pack(side=tk.LEFT)
+            ttk.Label(row, text=value).pack(side=tk.LEFT)
+            
+        # Close button
+        ttk.Button(self, text="Close", command=self.destroy).pack(pady=10)
+        
+        # Center window
+        self.update_idletasks()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        x = (self.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.winfo_screenheight() // 2) - (height // 2)
+        self.geometry(f"+{x}+{y}")
+        
+        # Auto-close after 10 seconds
+        self.after(10000, self.destroy)
 
 class Dashboard(tk.Frame):
     def __init__(self, parent, loop):
@@ -29,6 +98,7 @@ class Dashboard(tk.Frame):
         self.update_current_delta()
         self.schedule_update_portfolio()
         self.update_hedger_status()
+        self.check_alerts()  # Start checking for alerts
 
     def create_widgets(self):
         # Configure main window size and grid weights
@@ -156,6 +226,10 @@ class Dashboard(tk.Frame):
         self.hedger_status_label = ttk.Label(hedger_frame, text="Auto-Hedger Status: OFF", foreground="red")
         self.hedger_status_label.grid(row=7, column=0, columnspan=2, pady=10)
 
+        # Alert History Button
+        ttk.Button(hedger_frame, text="Show Alert History", command=self.show_alert_history).grid(
+            row=8, column=0, columnspan=2, pady=5)
+
     def create_ivrv_frame(self, parent):
         # IV/RV Calculator Frame
         ivrv_frame = ttk.LabelFrame(parent, text="IV / RV Calculator")
@@ -196,11 +270,62 @@ class Dashboard(tk.Frame):
         self.last_update_label = ttk.Label(ivrv_frame, text="Last Update: N/A")
         self.last_update_label.grid(row=5, column=0, columnspan=2, pady=5)
 
+    def show_alert_history(self):
+        """Show alert history in a new window."""
+        history_window = tk.Toplevel(self)
+        history_window.title("Alert History")
+        history_window.geometry("600x400")
+        
+        # Create Treeview
+        columns = ('Time', 'Symbol', 'Action', 'Quantity', 'Status', 'Price', 'Details')
+        tree = ttk.Treeview(history_window, columns=columns, show='headings', height=15)
+        
+        # Configure columns
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=80)
+        
+        # Add scrollbar
+        scrollbar = ttk.Scrollbar(history_window, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        
+        # Pack widgets
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
+        
+        # Populate with alerts
+        alerts = get_recent_alerts()
+        for alert in reversed(alerts):  # Show newest first
+            tree.insert('', 'end', values=(
+                alert.timestamp,
+                alert.symbol,
+                alert.action,
+                alert.quantity,
+                alert.status,
+                f"${alert.price:.2f}" if alert.price else "N/A",
+                alert.details or "N/A"
+            ))
     def create_stock_dropdown(self, parent):
         self.stock_var = tk.StringVar()
         self.stock_dropdown = ttk.Combobox(parent, textvariable=self.stock_var)
         self.stock_dropdown.bind("<<ComboboxSelected>>", self.on_stock_selection)
         return self.stock_dropdown
+
+    def check_alerts(self):
+        """Check for new alerts and display notifications."""
+        alerts = get_recent_alerts()
+        
+        # Get the last displayed alert timestamp from widget attribute
+        last_shown = getattr(self, '_last_alert_shown', '')
+        
+        # Show notifications for new alerts
+        for alert in alerts:
+            if alert.timestamp > last_shown:
+                AlertNotification(self, alert)
+                self._last_alert_shown = alert.timestamp
+        
+        # Schedule next check
+        self.after(1000, self.check_alerts)
 
     async def async_update_portfolio_display(self):
         """Update the portfolio display with current position data"""
@@ -329,6 +454,7 @@ class Dashboard(tk.Frame):
             start_auto_hedger(stock_symbol, target_delta, delta_change, max_order_qty)
         except Exception as e:
             print(f"Error starting auto-hedger: {str(e)}")
+            messagebox.showerror("Error", f"Failed to start auto-hedger: {str(e)}")
 
     def stop_auto_hedger(self):
         """Stop the auto-hedger"""
@@ -337,6 +463,7 @@ class Dashboard(tk.Frame):
             stop_auto_hedger(stock_symbol)
         except Exception as e:
             print(f"Error stopping auto-hedger: {str(e)}")
+            messagebox.showerror("Error", f"Failed to stop auto-hedger: {str(e)}")
 
     def update_hedger_status(self):
         """Update the auto-hedger status display"""
