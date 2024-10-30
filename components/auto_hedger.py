@@ -78,14 +78,27 @@ def get_or_create_event_loop():
 def has_pending_orders(symbol: str) -> bool:
     """Check if there are pending orders for a symbol."""
     try:
-        # Clean up old pending orders
-        current_orders = [o for o in ib.openTrades() if not o.isDone()]
-        pending_orders[symbol] = [
-            order for order in current_orders 
-            if (order.contract.symbol == symbol and 
-                order.orderStatus.status in ['Submitted', 'PreSubmitted'])
-        ]
-        return bool(pending_orders.get(symbol, []))
+        order_statuses = ['Submitted', 'PreSubmitted', 'PendingSubmit']
+        # Get all open trades
+        current_orders = ib.openTrades()
+        pending = []
+        
+        for trade in current_orders:
+            if trade.orderStatus.status in order_statuses:
+                contract = trade.contract
+                # For options, match by localSymbol
+                if isinstance(contract, Option) and contract.localSymbol == symbol:
+                    pending.append(trade)
+                # For stocks, match by symbol
+                elif contract.symbol == symbol:
+                    pending.append(trade)
+                    
+        pending_orders[symbol] = pending
+        has_pending = bool(pending)
+        if has_pending:
+            log_message(f"Found pending orders for {symbol}: {[t.orderStatus.status for t in pending]}")
+        return has_pending
+        
     except Exception as e:
         log_message(f"Error checking pending orders: {str(e)}")
         return False
@@ -93,9 +106,10 @@ def has_pending_orders(symbol: str) -> bool:
 def execute_trade(contract, order_qty, order_type='MKT'):
     """Execute a trade with the given parameters and create an alert."""
     try:
-        # Check for pending orders
-        if has_pending_orders(contract.symbol):
-            log_message(f"Skipping trade - pending orders exist for {contract.symbol}")
+        # For options, check pending orders by localSymbol
+        check_symbol = contract.localSymbol if isinstance(contract, Option) else contract.symbol
+        if has_pending_orders(check_symbol):
+            log_message(f"Skipping trade - pending orders exist for {check_symbol}")
             return False
 
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -106,11 +120,12 @@ def execute_trade(contract, order_qty, order_type='MKT'):
             order = MarketOrder('SELL', abs(order_qty))
             action = 'SELL'
 
-        log_message(f"Attempting to place order: {order_type} {order.action} {abs(order_qty)} {contract.symbol}")
+        identifier = contract.localSymbol if isinstance(contract, Option) else contract.symbol
+        log_message(f"Attempting to place order: {order_type} {order.action} {abs(order_qty)} {identifier}")
         
         alert = HedgeAlert(
             timestamp=timestamp,
-            symbol=contract.localSymbol if isinstance(contract, Option) else contract.symbol,
+            symbol=identifier,
             action=action,
             quantity=abs(order_qty),
             order_type=order_type,
@@ -123,26 +138,27 @@ def execute_trade(contract, order_qty, order_type='MKT'):
             alert.status = 'FAILED'
             alert.details = 'Failed to place order'
             add_alert(alert)
-            log_message(f"Failed to place order for {contract.symbol}")
+            log_message(f"Failed to place order for {identifier}")
             return False
 
         # Wait for initial order status
         ib.sleep(1)
 
         order_status = trade.orderStatus.status
-        if order_status in ['Submitted', 'PreSubmitted']:
+        if order_status in ['Submitted', 'PreSubmitted', 'PendingSubmit']:
             alert.status = 'PENDING'
             alert.details = f"Order pending: {order_status}"
             add_alert(alert)
             log_message(f"Order pending: {order_status}")
-            return False
+            # Consider pending orders as "success" to prevent duplicate orders
+            return True
             
         elif order_status == 'Filled':
             alert.status = 'FILLED'
             alert.price = trade.orderStatus.avgFillPrice
             alert.details = f"Filled at {trade.orderStatus.avgFillPrice}"
             add_alert(alert)
-            log_message(f"Order filled: {order_type} {order.action} {abs(order_qty)} {contract.symbol} at {trade.orderStatus.avgFillPrice}")
+            log_message(f"Order filled: {order_type} {order.action} {abs(order_qty)} {identifier} at {trade.orderStatus.avgFillPrice}")
             return True
             
         else:
@@ -154,9 +170,10 @@ def execute_trade(contract, order_qty, order_type='MKT'):
             
     except Exception as e:
         error_msg = f"Error executing trade: {str(e)}"
+        identifier = contract.localSymbol if isinstance(contract, Option) else contract.symbol
         alert = HedgeAlert(
             timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            symbol=contract.localSymbol if isinstance(contract, Option) else contract.symbol,
+            symbol=identifier,
             action=action,
             quantity=abs(order_qty),
             order_type=order_type,
@@ -183,41 +200,57 @@ def get_current_positions(position_key):
         log_message(f"Error getting positions: {str(e)}")
         return []
 
-def calculate_aggregate_delta(positions):
-    """Calculate aggregate delta for given positions."""
+def parse_option_symbol(symbol: str) -> dict:
+    """Parse option symbol into components."""
     try:
-        total_delta = 0
-        for position in positions:
-            if not position:
-                continue
-            delta = get_delta(position, ib)
-            if delta is not None:
-                total_delta += delta
-        return total_delta
+        # Expected format: "QQQ   241101P00498000"
+        # Remove extra spaces but keep at least one space
+        parts = " ".join(symbol.split()).split()
+        underlying = parts[0]  # 'QQQ'
+        
+        if len(parts) < 2:
+            raise ValueError("Invalid option symbol format")
+            
+        date_str = parts[1][:6]  # '241101'
+        year = "20" + date_str[:2]
+        month = date_str[2:4]
+        day = date_str[4:6]
+        
+        # Extract right and strike
+        detail = parts[1][6:]  # 'P00498000'
+        right = detail[0]  # 'P' or 'C'
+        strike = float(detail[1:]) / 1000.0  # '00498000' -> 498.0
+        
+        return {
+            'symbol': underlying,
+            'lastTradeDateOrContractMonth': f"{year}{month}{day}",
+            'strike': strike,
+            'right': right,
+            'exchange': 'SMART',
+            'currency': 'USD',
+            'multiplier': '100'
+        }
     except Exception as e:
-        log_message(f"Error calculating aggregate delta: {str(e)}")
-        return 0
+        log_message(f"Error parsing option symbol {symbol}: {str(e)}")
+        return None
 
-def get_or_create_contract(position_key):
-    """Get or create appropriate contract based on position key."""
+def create_contract_from_key(position_key: str):
+    """Create appropriate contract based on position key."""
     try:
         # Check if this is an option by looking for standard option format
-        if any(x in position_key for x in ['C', 'P']) and any(c.isdigit() for c in position_key):
-            # Parse option details from localSymbol
-            parts = position_key.split()
-            symbol = parts[0]
-            expiry = parts[1]
-            strike = float(parts[2])
-            right = parts[3]
-            
-            contract = Option(symbol, expiry, strike, right, 'SMART')
-            contract.currency = 'USD'
-            contract.multiplier = '100'
-            return contract
-            
+        if 'C' in position_key or 'P' in position_key:
+            option_data = parse_option_symbol(position_key)
+            if option_data:
+                contract = Option(**option_data)
+                # Set primary exchange for options
+                contract.primaryExchange = 'AMEX'
+                log_message(f"Created option contract for {position_key}")
+                return contract
         else:
             # Create stock contract
-            return define_stock_contract(position_key)
+            contract = define_stock_contract(position_key)
+            log_message(f"Created stock contract for {position_key}")
+            return contract
             
     except Exception as e:
         log_message(f"Error creating contract for {position_key}: {str(e)}")
@@ -229,21 +262,30 @@ def hedge_position(position_key, target_delta, delta_change_threshold, max_order
         if position_key not in hedger_status or not hedger_status[position_key]:
             return
 
-        if has_pending_orders(position_key.split()[0]):
-            log_message(f"Skipping hedge - pending orders exist for {position_key}")
-            return
-
-        hedging_contract = get_or_create_contract(position_key)
+        # Create appropriate contract
+        if 'C' in position_key or 'P' in position_key:
+            # Option contract
+            hedging_contract = create_contract_from_key(position_key)
+        else:
+            # Stock contract - don't try to parse as option
+            hedging_contract = define_stock_contract(position_key)
+            
         if not hedging_contract:
             log_message(f"Failed to create contract for {position_key}")
             return
 
+        # Get current positions
         positions = get_current_positions(position_key)
         if not positions:
             log_message(f"No positions found for {position_key}")
             return
+
+        # Check for open orders AFTER validating position exists
+        if has_pending_orders(position_key):
+            log_message(f"Skipping hedge - pending orders exist for {position_key}")
+            return
             
-        current_delta = calculate_aggregate_delta(positions)
+        current_delta = sum(get_delta(pos, ib) for pos in positions)
         
         log_message(f"Current aggregate delta for {position_key}: {current_delta:.2f}")
         log_message(f"Target delta: {target_delta}")
@@ -251,30 +293,49 @@ def hedge_position(position_key, target_delta, delta_change_threshold, max_order
         delta_difference = target_delta - current_delta
         log_message(f"Delta difference for {position_key}: {delta_difference:.2f}")
         
+        # Only hedge if delta difference exceeds threshold
         if abs(delta_difference) > delta_change_threshold:
-            # For options, adjust order quantity based on contract delta
             if isinstance(hedging_contract, Option):
-                # Get approximate contract delta
+                # For options, adjust order quantity based on contract delta and multiplier
+                multiplier = float(hedging_contract.multiplier) if hasattr(hedging_contract, "multiplier") else 100.0
                 contract_delta = 0.5 if hedging_contract.right == 'C' else -0.5
-                order_qty = int(delta_difference / (contract_delta * 100))
+                # Convert position delta to contract quantity
+                order_qty = int(delta_difference / (contract_delta * multiplier))
+                log_message(f"Option order calculation: delta_diff={delta_difference:.2f}, contract_delta={contract_delta}, multiplier={multiplier}")
+                log_message(f"Calculated option order quantity: {order_qty} contracts")
             else:
-                # For stocks, delta difference is directly share quantity
+                # For stocks, just use delta difference directly
                 order_qty = int(delta_difference)
+                log_message(f"Stock order calculation: delta_diff={delta_difference:.2f}")
+                log_message(f"Calculated stock order quantity: {order_qty} shares")
             
-            # Limit order quantity
+            # Apply max order limit if needed
+            original_qty = order_qty
             if abs(order_qty) > max_order_qty:
                 order_qty = max_order_qty if order_qty > 0 else -max_order_qty
+                log_message(f"Order quantity adjusted from {original_qty} to {order_qty} due to max order limit")
             
             if order_qty != 0:
-                log_message(f"Placing order for {order_qty} {'contracts' if isinstance(hedging_contract, Option) else 'shares'} of {position_key}")
+                identifier = hedging_contract.localSymbol if isinstance(hedging_contract, Option) else hedging_contract.symbol
+                instrument_type = 'contracts' if isinstance(hedging_contract, Option) else 'shares'
+                
+                # Log full order details
+                direction = "BUY" if order_qty > 0 else "SELL"
+                log_message(f"Preparing order: {direction} {abs(order_qty)} {instrument_type} of {identifier}")
+                
                 success = execute_trade(hedging_contract, order_qty)
                 if success:
-                    log_message(f"Successfully hedged {position_key}")
+                    log_message(f"Successfully placed hedge order for {identifier}")
                 else:
-                    log_message(f"Failed to hedge {position_key}")
+                    log_message(f"Failed to place hedge order for {identifier}")
+            else:
+                log_message("Calculated order quantity is zero, skipping trade")
+        else:
+            log_message(f"Delta difference {delta_difference:.2f} within threshold {delta_change_threshold}, no hedge needed")
             
     except Exception as e:
         log_message(f"Error in hedge_position: {str(e)}")
+        log_message(f"Exception details: {str(e.__class__.__name__)}: {str(e)}")
 
 def run_auto_hedger(position_key, target_delta, delta_change_threshold, max_order_qty):
     """Function for auto hedging."""
@@ -285,16 +346,31 @@ def run_auto_hedger(position_key, target_delta, delta_change_threshold, max_orde
             main_event_loop = loop
 
         log_message(f"**** Auto-Hedger started for {position_key} ****")
+        log_message(f"Parameters: target_delta={target_delta}, threshold={delta_change_threshold}, max_qty={max_order_qty}")
+        
+        error_count = 0
+        max_errors = 3  # Maximum consecutive errors before stopping
+        
         while hedger_status.get(position_key, False):
             try:
+                # Try to hedge
                 hedge_position(position_key, target_delta, delta_change_threshold, max_order_qty)
-                ib.sleep(5)  # Wait before next check
+                error_count = 0  # Reset error count on success
+                
+                # Sleep before next check
+                log_message("Waiting 5 seconds before next hedge check...")
+                ib.sleep(5)
+                
             except Exception as e:
+                error_count += 1
                 log_message(f"Error in hedging cycle: {str(e)}")
+                if error_count >= max_errors:
+                    log_message(f"Stopping auto-hedger after {max_errors} consecutive errors")
+                    break
                 ib.sleep(5)  # Wait before retrying
             
     except Exception as e:
-        log_message(f"Error in auto_hedger_thread: {str(e)}")
+        log_message(f"Fatal error in auto_hedger_thread: {str(e)}")
     finally:
         hedger_status[position_key] = False
         log_message(f"Auto-Hedger stopped for {position_key}")
