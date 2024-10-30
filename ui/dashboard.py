@@ -293,6 +293,7 @@ class Dashboard(tk.Frame):
         self.after(1000, self.check_alerts)
 
     async def async_update_portfolio_display(self):
+        """Update the portfolio display with current position data"""
         try:
             if not ib.isConnected():
                 self.connection_status.config(text="Connection Status: Disconnected", foreground="red")
@@ -300,68 +301,112 @@ class Dashboard(tk.Frame):
             else:
                 self.connection_status.config(text="Connection Status: Connected", foreground="green")
 
-            for i in self.portfolio_tree.get_children():
-                self.portfolio_tree.delete(i)
-
+            # Get current positions first
             positions = get_portfolio_positions()
             if not positions:
+                # Only clear if we have no positions
+                for i in self.portfolio_tree.get_children():
+                    self.portfolio_tree.delete(i)
+                self.update_status.config(text="No positions found", foreground="orange")
                 return
 
+            # Store current selection and values
+            selected_items = self.portfolio_tree.selection()
+            current_values = {
+                self.portfolio_tree.item(item)["values"][0]: item 
+                for item in self.portfolio_tree.get_children()
+            }
+
+            # Process all positions first and gather data
+            position_data = []
             for position in positions:
                 try:
                     contract = position.contract
+                    # Set exchange before market data request
                     contract.exchange = 'SMART'
                     if contract.secType == 'OPT':
                         contract.exchange = 'AMEX'
                     
-                    await ib.qualifyContractsAsync(contract)
+                    # Only qualify option contracts
+                    if contract.secType == 'OPT':
+                        await ib.qualifyContractsAsync(contract)
+                    
                     market_price, market_value, unrealized_pnl = get_market_price(contract)
                     delta = get_delta(position, ib)
-
-                    if market_price is not None:
-                        symbol = contract.localSymbol if contract.secType == 'OPT' else contract.symbol
-                        self.master.after(0, self.insert_treeview_row, 
-                                        symbol, 
-                                        contract.secType, 
-                                        position.position,
-                                        delta,
-                                        position.avgCost,
-                                        market_price,
-                                        unrealized_pnl)
-
+                    
+                    if market_price is None:
+                        continue
+                        
+                    symbol = contract.localSymbol if contract.secType == 'OPT' else contract.symbol
+                    position_data.append({
+                        'symbol': symbol,
+                        'secType': contract.secType,
+                        'position': position.position,
+                        'delta': delta,
+                        'avgCost': position.avgCost,
+                        'marketPrice': market_price,
+                        'unrealizedPNL': unrealized_pnl
+                    })
+                    
                 except Exception as e:
-                    print(f"Error processing position {contract.symbol}: {str(e)}")
+                    logger.error(f"Error processing position {contract.symbol}: {str(e)}")
 
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            self.update_status.config(text=f"Last Update: {current_time}", foreground="green")
-            self.portfolio_last_update = current_time
-            
+            # Only update display if we have data
+            if position_data:
+                # Update existing items and add new ones
+                for data in position_data:
+                    symbol = data['symbol']
+                    if symbol in current_values:
+                        # Update existing item
+                        item_id = current_values[symbol]
+                        self.portfolio_tree.item(item_id, values=(
+                            symbol,
+                            data['secType'],
+                            f"{data['position']:,.0f}",
+                            f"{data['delta']:,.2f}",
+                            f"{data['avgCost']:,.2f}",
+                            f"{data['marketPrice']:,.2f}",
+                            f"{data['unrealizedPNL']:,.2f}"
+                        ))
+                        del current_values[symbol]  # Remove from current values
+                    else:
+                        # Insert new item
+                        self.portfolio_tree.insert('', 'end', values=(
+                            symbol,
+                            data['secType'],
+                            f"{data['position']:,.0f}",
+                            f"{data['delta']:,.2f}",
+                            f"{data['avgCost']:,.2f}",
+                            f"{data['marketPrice']:,.2f}",
+                            f"{data['unrealizedPNL']:,.2f}"
+                        ))
+
+                # Remove any remaining old items
+                for item_id in current_values.values():
+                    self.portfolio_tree.delete(item_id)
+
+                # Restore selection
+                for item in selected_items:
+                    self.portfolio_tree.selection_add(item)
+
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                self.update_status.config(text=f"Last Update: {current_time}", foreground="green")
+                self.portfolio_last_update = current_time
+
         except Exception as e:
-            print(f"Error in async_update_portfolio_display: {str(e)}")
+            logger.error(f"Error updating portfolio display: {str(e)}")
             self.update_status.config(text="Update Failed", foreground="red")
             self.portfolio_update_error = str(e)
 
-    def insert_treeview_row(self, symbol, secType, position, delta, avg_cost, market_price, unrealized_pnl):
-        try:
-            self.portfolio_tree.insert('', 'end', values=(
-                symbol,
-                secType,
-                f"{position:,.0f}",
-                f"{delta:,.2f}",
-                f"{avg_cost:,.2f}",
-                f"{market_price:,.2f}",
-                f"{unrealized_pnl:,.2f}"
-            ))
-        except Exception as e:
-            print(f"Error inserting row into treeview: {str(e)}")
-
     def schedule_update_portfolio(self):
+        """Schedule portfolio updates"""
         try:
             if ib.isConnected():
                 asyncio.run_coroutine_threadsafe(self.async_update_portfolio_display(), self.loop)
         except Exception as e:
             print(f"Error scheduling portfolio update: {str(e)}")
         finally:
+            # Update every 5 seconds instead of 1
             self.after(5000, self.schedule_update_portfolio)
 
     def load_positions(self):

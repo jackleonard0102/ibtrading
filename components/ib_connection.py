@@ -6,12 +6,18 @@ import logging
 from config import config
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
+from datetime import datetime, timedelta
 
 # Configure module logger
 logger = logging.getLogger(__name__)
 
 # Initialize IB connection
 ib = IB()
+
+# Cache for market data
+market_data_cache = {}
+last_market_data_request = {}
+MARKET_DATA_CACHE_TIME = 5  # seconds
 
 async def connect_ib() -> bool:
     """
@@ -29,7 +35,7 @@ async def connect_ib() -> bool:
                 
                 if ib.isConnected():
                     logger.info("Successfully connected to IBKR")
-                    ib.reqMarketDataType(2)  # Use delayed market data, more reliable for Greeks
+                    ib.reqMarketDataType(3)  # Use delayed frozen data for more reliability
                     return True
             else:
                 logger.info("Already connected to IBKR")
@@ -56,7 +62,7 @@ def get_portfolio_positions() -> List[Any]:
             return []
             
         positions = ib.positions()
-        logger.info(f"Fetched {len(positions)} positions")
+        logger.debug(f"Fetched {len(positions)} positions")  # Changed to debug level
         return positions
         
     except Exception as e:
@@ -81,7 +87,7 @@ def define_stock_contract(
     """
     try:
         contract = Stock(symbol, exchange, currency)
-        logger.info(f"Created stock contract for {symbol}")
+        logger.debug(f"Created stock contract for {symbol}")
         return contract
     except Exception as e:
         logger.error(f"Error creating stock contract for {symbol}: {e}")
@@ -108,27 +114,55 @@ def get_market_price(contract: Stock) -> Tuple[Optional[float], Optional[float],
         logger.error(f"Error getting market price for {contract.symbol}: {e}")
     return None, None, None
 
-def get_theoretical_delta(contract: Option, price: float) -> float:
-    """Calculate theoretical delta for an option based on its moneyness"""
-    strike = float(contract.strike)
-    moneyness = abs(price - strike) / strike
+def can_request_market_data(contract_id: int) -> bool:
+    """Check if we can request market data for a contract based on cache time"""
+    now = datetime.now()
+    if contract_id in last_market_data_request:
+        last_request = last_market_data_request[contract_id]
+        if now - last_request < timedelta(seconds=MARKET_DATA_CACHE_TIME):
+            return False
+    last_market_data_request[contract_id] = now
+    return True
 
-    # For calls:
-    if contract.right == 'C':
-        if price > strike:  # ITM
-            return min(0.95, 0.7 + 0.25 * moneyness)  # 0.7 to 0.95 based on moneyness
-        elif price < strike:  # OTM
-            return max(0.05, 0.3 - 0.25 * moneyness)  # 0.05 to 0.3 based on moneyness
-        else:  # ATM
-            return 0.5
-    # For puts:
-    else:
-        if price < strike:  # ITM
-            return max(-0.95, -0.7 - 0.25 * moneyness)  # -0.95 to -0.7 based on moneyness
-        elif price > strike:  # OTM
-            return min(-0.05, -0.3 + 0.25 * moneyness)  # -0.3 to -0.05 based on moneyness
-        else:  # ATM
-            return -0.5
+def get_cached_market_data(contract_id: int) -> Optional[float]:
+    """Get cached market data if available and not expired"""
+    if contract_id in market_data_cache:
+        data, timestamp = market_data_cache[contract_id]
+        if datetime.now() - timestamp < timedelta(seconds=MARKET_DATA_CACHE_TIME):
+            return data
+    return None
+
+def calculate_theoretical_delta(contract: Option, market_price: float) -> float:
+    """Calculate theoretical option delta based on moneyness"""
+    try:
+        strike = float(contract.strike)
+        moneyness = (market_price - strike) / strike
+
+        if contract.right == 'C':
+            if moneyness > 0:  # ITM call
+                base_delta = 0.85
+                adj = min(0.15, moneyness * 0.3)  # More ITM = higher delta
+                return base_delta + adj
+            elif moneyness < 0:  # OTM call
+                base_delta = 0.15
+                adj = max(-0.1, moneyness * 0.3)  # More OTM = lower delta
+                return base_delta + adj
+            else:  # ATM call
+                return 0.5
+        else:  # Put
+            if moneyness < 0:  # ITM put
+                base_delta = -0.85
+                adj = max(-0.15, moneyness * 0.3)  # More ITM = more negative delta
+                return base_delta + adj
+            elif moneyness > 0:  # OTM put
+                base_delta = -0.15
+                adj = min(0.1, moneyness * 0.3)  # More OTM = less negative delta
+                return base_delta + adj
+            else:  # ATM put
+                return -0.5
+    except Exception as e:
+        logger.error(f"Error calculating theoretical delta: {e}")
+        return 0.0
 
 def get_delta(position: Any, ib_instance: IB) -> float:
     """
@@ -145,42 +179,47 @@ def get_delta(position: Any, ib_instance: IB) -> float:
         contract = position.contract
         pos_size = float(position.position)
 
+        # For stocks, delta is just the position size
         if contract.secType == 'STK':
-            # Stock delta is always 1 * position size
             return pos_size
-            
+
+        # For options, calculate delta based on position and contract
         elif contract.secType == 'OPT':
-            # Get option delta
-            contract.exchange = 'SMART'
-            contract.primaryExchange = 'AMEX'
+            # Try to get cached market data first
+            cached_delta = None
+            if hasattr(contract, 'conId'):
+                cached_delta = get_cached_market_data(contract.conId)
             
-            # First try to get real market data
-            ticker = ib_instance.reqMktData(contract, '', False, False)
-            ib_instance.sleep(1.0)  # Wait for market data
-            
-            if ticker and ticker.modelGreeks and ticker.modelGreeks.delta is not None:
-                contract_delta = ticker.modelGreeks.delta
-                logger.info(f"Got market data delta for {contract.localSymbol}: {contract_delta}")
+            contract_delta = None
+            if cached_delta is not None:
+                contract_delta = cached_delta
+                logger.debug(f"Using cached delta for {contract.localSymbol}")
             else:
-                # If market data unavailable, calculate theoretical delta
-                portfolio_items = [item for item in ib_instance.portfolio() if item.contract.conId == contract.conId]
-                if portfolio_items:
-                    price = portfolio_items[0].marketPrice
-                    contract_delta = get_theoretical_delta(contract, price)
-                    logger.info(f"Using theoretical delta for {contract.localSymbol}: {contract_delta}")
-                else:
-                    # Fallback to approximate ATM delta
-                    contract_delta = 0.5 if contract.right == 'C' else -0.5
-                    logger.info(f"Using fallback delta for {contract.localSymbol}: {contract_delta}")
+                # Only request new market data if cache expired
+                if hasattr(contract, 'conId') and can_request_market_data(contract.conId):
+                    # Get current stock price from portfolio
+                    portfolio = [item for item in ib.portfolio() if item.contract.symbol == contract.symbol]
+                    if portfolio:
+                        stock_price = portfolio[0].marketPrice
+                        # Calculate theoretical delta
+                        contract_delta = calculate_theoretical_delta(contract, stock_price)
+                        # Cache the result
+                        market_data_cache[contract.conId] = (contract_delta, datetime.now())
+                        logger.debug(f"Calculated new delta for {contract.localSymbol}: {contract_delta}")
             
-            # Calculate total position delta
+            if contract_delta is None:
+                # Use very conservative delta estimate if all else fails
+                contract_delta = 0.5 if contract.right == 'C' else -0.5
+                logger.debug(f"Using default delta for {contract.localSymbol}: {contract_delta}")
+
+            # Calculate final position delta
             multiplier = float(contract.multiplier) if hasattr(contract, "multiplier") else 100.0
-            pos_delta = pos_size * contract_delta * multiplier
-            logger.info(f"Final position delta for {contract.localSymbol}: {pos_delta}")
-            return pos_delta
-            
+            position_delta = pos_size * contract_delta * multiplier
+            logger.debug(f"Final position delta for {contract.localSymbol}: {position_delta}")
+            return position_delta
+
         return 0.0
-            
+
     except Exception as e:
         logger.error(f"Error calculating delta for {contract.symbol}: {e}")
         return 0.0
